@@ -225,7 +225,7 @@ const createJobTrackingUI = async () => {
         }
         
         // Send message to background to sync with Firebase
-        chrome.runtime.sendMessage({ action: 'syncStats' })
+        await chrome.runtime.sendMessage({ action: 'syncStats' })
           .catch(error => {
             console.log("Could not send sync message:", error);
           });
@@ -315,7 +315,7 @@ const createJobTrackingUI = async () => {
           }
           
           // Send message to background to sync with Firebase
-          chrome.runtime.sendMessage({ action: 'syncStats' })
+          await chrome.runtime.sendMessage({ action: 'syncStats' })
             .catch(error => {
               console.log("Could not send sync message:", error);
             });
@@ -349,7 +349,12 @@ const createJobTrackingUI = async () => {
             refreshedRemoveButton.disabled = true; // Keep disabled until track is clicked
             refreshedRemoveButton.innerHTML = '<span class="button-icon">-</span> Remove Application';
           }
+          
+          if (refreshedTrackButton) {
+            refreshedTrackButton.disabled = false;
+          }
         }, 2000);
+        
       } catch (error) {
         console.error("Error removing application:", error);
         
@@ -365,12 +370,13 @@ const createJobTrackingUI = async () => {
             
             if (refreshedRemoveButton) {
               refreshedRemoveButton.classList.remove('error');
-              refreshedRemoveButton.disabled = true;
+              refreshedRemoveButton.disabled = !isCurrentUrlTracked;
+              refreshedRemoveButton.innerHTML = '<span class="button-icon">-</span> Remove Application';
             }
             
             if (refreshedTrackButton) {
               // Enable track button
-              refreshedTrackButton.disabled = false;
+              refreshedTrackButton.disabled = isCurrentUrlTracked;
             }
           }, 2000);
         }
@@ -381,28 +387,79 @@ const createJobTrackingUI = async () => {
   }
 };
 
-// Add event listener to inject UI after page load
-window.addEventListener('load', () => {
-  // Job application site detection logic (simplified for now)
-  const isJobSite = true; // In a real app, we would have more complex detection
-  
-  if (isJobSite) {
+// Function to refresh the UI without recreating it
+const refreshUI = async () => {
+  // Check if UI exists, if not recreate it
+  const container = document.getElementById('job-streak-container');
+  if (!container) {
+    console.log('UI container not found, recreating');
     createJobTrackingUI();
-    
-    // Listen for storage changes to update UI in real-time
-    chrome.storage.onChanged.addListener((changes, namespace) => {
-      if (namespace === 'local' && changes.stats) {
-        // Refresh the UI with updated data
-        createJobTrackingUI();
-      }
-    });
+    return;
   }
-});
 
-// Listen for messages from the background script
+  // Get latest stats
+  let stats = await getUserStats();
+  
+  // Update counter displays
+  const todayCountElement = document.querySelector('.stat-box:first-child .stat-count');
+  const streakCountElement = document.querySelector('.stat-box:nth-child(2) .stat-count');
+  
+  if (todayCountElement) {
+    todayCountElement.textContent = stats.todayCount;
+  }
+  
+  if (streakCountElement) {
+    streakCountElement.textContent = stats.streak;
+  }
+  
+  // Reset button states based on current URL
+  const currentUrl = window.location.href;
+  const lastTrackedJob = stats.appliedJobs.find(job => job.lastTracked === true);
+  const isCurrentUrlTracked = lastTrackedJob && lastTrackedJob.url === currentUrl;
+  
+  const trackButton = document.getElementById('track-job');
+  const removeButton = document.getElementById('remove-job');
+  
+  if (!trackButton || !removeButton) {
+    console.log('Buttons not found, recreating UI');
+    createJobTrackingUI();
+    return;
+  }
+  
+  // Reset button states and appearances
+  trackButton.disabled = isCurrentUrlTracked;
+  trackButton.classList.remove('loading', 'success', 'error', 'warning');
+  trackButton.innerHTML = '<span class="button-icon">+</span> Track Application';
+  
+  removeButton.disabled = !isCurrentUrlTracked;
+  removeButton.classList.remove('loading', 'success', 'error', 'warning');
+  removeButton.innerHTML = '<span class="button-icon">-</span> Remove Application';
+};
+
+// Create and inject UI when page loads
+window.addEventListener('load', createJobTrackingUI);
+
+// Listen for messages from background script
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'refreshStats') {
-    createJobTrackingUI();
+    // Refresh UI with latest data
+    refreshUI().catch(error => {
+      console.error('Error refreshing UI:', error);
+    });
+    sendResponse({ status: 'success' });
   }
-  sendResponse({ status: 'success' });
-}); 
+  return true; // Keep message channel open for async response
+});
+
+// Add event listener for URL changes in single-page apps
+let lastUrl = window.location.href;
+new MutationObserver(() => {
+  const currentUrl = window.location.href;
+  if (currentUrl !== lastUrl) {
+    lastUrl = currentUrl;
+    // URL changed, refresh the UI
+    refreshUI().catch(error => {
+      console.error('Error refreshing UI after URL change:', error);
+    });
+  }
+}).observe(document, { subtree: true, childList: true });

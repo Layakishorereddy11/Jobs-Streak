@@ -1,6 +1,10 @@
 // Make sure the alarms permission is in the manifest.json file:
 // "permissions": ["tabs", "storage", "identity", "activeTab", "alarms"]
 
+// Import Firebase SDK
+importScripts('lib/firebase-app-compat.js');
+importScripts('lib/firebase-database-compat.js');
+
 // Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyAEJrsFagxQs8KmaG47fKKzcC_81LAJ4R8",
@@ -13,6 +17,34 @@ const firebaseConfig = {
   measurementId: "G-87ZXGEFB07"
 };
 
+// Initialize Firebase
+firebase.initializeApp(firebaseConfig);
+
+// Function to retry pending syncs
+const retryPendingSync = () => {
+  chrome.storage.local.get(['pendingSync'], (result) => {
+    if (result.pendingSync && result.pendingSync.userId && (result.pendingSync.stats || result.pendingSync.timestamp)) {
+      console.log('Found pending sync, retrying...');
+      const userId = result.pendingSync.userId;
+      
+      // If we have the stats directly in pendingSync, use them
+      if (result.pendingSync.stats) {
+        syncWithFirebase(userId, result.pendingSync.stats);
+      } else {
+        // Otherwise get the current stats
+        chrome.storage.local.get(['stats'], (statsResult) => {
+          if (statsResult.stats) {
+            syncWithFirebase(userId, statsResult.stats);
+          }
+        });
+      }
+    }
+  });
+};
+
+// Set up a periodic check for pending syncs
+chrome.alarms.create('syncRetry', { periodInMinutes: 5 }); // Check every 5 minutes
+
 // Listen for installation
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
@@ -21,7 +53,13 @@ chrome.runtime.onInstalled.addListener((details) => {
       url: chrome.runtime.getURL('onboarding.html')
     });
   }
+  
+  // Check for pending syncs on startup
+  retryPendingSync();
 });
+
+// Also check for pending syncs when the service worker starts
+retryPendingSync();
 
 // Function to check if day has changed and update streak accordingly
 const checkDayChange = async () => {
@@ -62,24 +100,51 @@ const checkDayChange = async () => {
 
 // Function to sync data with Firebase
 const syncWithFirebase = (userId, stats) => {
-  console.log('Background script queueing sync for user:', userId);
+  console.log('Background script syncing immediately for user:', userId);
   
-  // Store locally
+  // Always try to update Firebase
+  try {
+    const dbRef = firebase.database().ref(`users/${userId}/stats`);
+    dbRef.set(stats)
+      .then(() => {
+        console.log('Firebase DB updated successfully.');
+        
+        // Clear any pending sync after success
+        chrome.storage.local.set({
+          pendingSyncResolved: true
+        });
+      })
+      .catch((err) => {
+        console.error('Error updating Firebase DB:', err);
+        // Keep track of pending sync for retry later
+        chrome.storage.local.set({
+          pendingSync: {
+            userId,
+            timestamp: Date.now(),
+            stats: stats
+          }
+        });
+      });
+  } catch (error) {
+    console.error('Failed to access Firebase:', error);
+    // Save pending sync
+    chrome.storage.local.set({
+      pendingSync: {
+        userId,
+        timestamp: Date.now(),
+        stats: stats
+      }
+    });
+  }
+  
+  // Update local chrome storage
   chrome.storage.local.set({ stats });
   
-  // Queue sync operation for when popup opens
-  chrome.storage.local.set({ 
-    pendingSync: { 
-      userId, 
-      timestamp: Date.now() 
-    }
-  });
-  
-  // Send message to all tabs to refresh stats
+  // Send message to all tabs so that content UIs refresh immediately
   chrome.tabs.query({}, (tabs) => {
     tabs.forEach((tab) => {
       chrome.tabs.sendMessage(tab.id, { action: 'refreshStats' })
-        .catch(() => {}); // Ignore errors for tabs that don't have our content script
+        .catch(() => {}); // Ignore errors for tabs missing our content script
     });
   });
 };
@@ -91,6 +156,10 @@ chrome.alarms.create('dailyCheck', { periodInMinutes: 60 }); // Check every hour
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'dailyCheck') {
     checkDayChange();
+  }
+  
+  if (alarm.name === 'syncRetry') {
+    retryPendingSync();
   }
 });
 
@@ -117,4 +186,4 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   
   return true; // Keep the message channel open for async responses
-}); 
+});
