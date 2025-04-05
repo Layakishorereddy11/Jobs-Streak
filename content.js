@@ -224,11 +224,11 @@ const createJobTrackingUI = async () => {
           removeButton.disabled = false;
         }
         
-        // Send message to background to sync with Firebase
-        await chrome.runtime.sendMessage({ action: 'syncStats' })
-          .catch(error => {
-            console.log("Could not send sync message:", error);
-          });
+        // Sync with Firebase via background script
+        const syncSuccess = await syncWithFirebase();
+        if (!syncSuccess) {
+          console.log('Firebase sync failed, data will sync later');
+        }
         
         // Reset button after delay with null checks
         setTimeout(() => {
@@ -314,11 +314,11 @@ const createJobTrackingUI = async () => {
             trackButton.disabled = false;
           }
           
-          // Send message to background to sync with Firebase
-          await chrome.runtime.sendMessage({ action: 'syncStats' })
-            .catch(error => {
-              console.log("Could not send sync message:", error);
-            });
+          // Sync with Firebase via background script
+          const syncSuccess = await syncWithFirebase();
+          if (!syncSuccess) {
+            console.log('Firebase sync failed, data will sync later');
+          }
         } else {
           // Only proceed if elements still exist
           if (removeButton && document.body.contains(removeButton)) {
@@ -381,6 +381,35 @@ const createJobTrackingUI = async () => {
           }, 2000);
         }
       }
+    });
+
+    // Add click listener to stats area for manual sync
+    document.querySelector('.job-streak-stats').addEventListener('click', async () => {
+      // Visual feedback that sync is happening
+      const statsElement = document.querySelector('.job-streak-stats');
+      statsElement.classList.add('syncing');
+      
+      // Try to sync
+      console.log('Manual sync triggered');
+      const syncSuccess = await syncWithFirebase();
+      
+      // Visual feedback of sync result
+      if (syncSuccess) {
+        statsElement.classList.remove('syncing');
+        statsElement.classList.add('sync-success');
+        setTimeout(() => {
+          statsElement.classList.remove('sync-success');
+        }, 1500);
+      } else {
+        statsElement.classList.remove('syncing');
+        statsElement.classList.add('sync-error');
+        setTimeout(() => {
+          statsElement.classList.remove('sync-error');
+        }, 1500);
+      }
+      
+      // Also refresh UI to make sure it's up to date
+      await refreshUI();
     });
   } catch (error) {
     console.error("Error creating job tracking UI:", error);
@@ -463,3 +492,33 @@ new MutationObserver(() => {
     });
   }
 }).observe(document, { subtree: true, childList: true });
+
+// Function to sync with Firebase via background script
+const syncWithFirebase = async () => {
+  console.log('Sending syncStats message to background script');
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'syncStats' });
+    console.log('Sync response:', response);
+    if (response && response.status === 'success') {
+      console.log('Sync successful');
+      return true;
+    } else {
+      console.error('Sync failed:', response ? response.message : 'Unknown error');
+      return false;
+    }
+  } catch (error) {
+    console.error('Error sending sync message:', error);
+    // Try again in case the background script was inactive
+    try {
+      console.log('Retrying sync after error...');
+      // Wait a moment for the service worker to wake up
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const retryResponse = await chrome.runtime.sendMessage({ action: 'syncStats' });
+      console.log('Retry sync response:', retryResponse);
+      return retryResponse && retryResponse.status === 'success';
+    } catch (retryError) {
+      console.error('Retry sync also failed:', retryError);
+      return false;
+    }
+  }
+};
