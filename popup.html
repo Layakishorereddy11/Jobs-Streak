@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jobs Streak</title>
+  <link rel="stylesheet" href="popup.css">
+  <script src="lib/firebase-app-compat.js"></script>
+  <script src="lib/firebase-auth-compat.js"></script>
+  <script src="lib/firebase-firestore-compat.js"></script>
+  <script src="lib/firebase-database-compat.js"></script>
+  <script src="lib/chart.js"></script>
+  <script src="firebaseInit.js"></script>
+</head>
+<body>
+  <!-- Authentication Section -->
+  <div id="auth-section" class="section">
+    <div class="auth-logo">
+      <img src="images/icon128.png" alt="Jobs Streak">
+      <h1>Jobs Streak</h1>
+    </div>
+    
+    <div class="auth-forms">
+      <!-- Login Form -->
+      <form id="login-form" class="active">
+        <h2>Sign In</h2>
+        <div class="form-group">
+          <label for="login-email">Email</label>
+          <input type="email" id="login-email" required placeholder="Your email">
+        </div>
+        <div class="form-group">
+          <label for="login-password">Password</label>
+          <input type="password" id="login-password" required placeholder="Your password">
+        </div>
+        <button type="submit" class="btn btn-primary">Sign In</button>
+        <div class="google-auth">
+          <button type="button" id="google-signin" class="btn btn-google">
+            <img src="images/google-icon.png" alt="Google">
+            Sign in with Google
+          </button>
+        </div>
+        <p class="form-footer">
+          Don't have an account? <a href="#" id="show-signup">Sign Up</a>
+        </p>
+      </form>
+      
+      <!-- Signup Form -->
+      <form id="signup-form">
+        <h2>Create Account</h2>
+        <div class="form-group">
+          <label for="signup-name">Full Name</label>
+          <input type="text" id="signup-name" required placeholder="Your name">
+        </div>
+        <div class="form-group">
+          <label for="signup-email">Email</label>
+          <input type="email" id="signup-email" required placeholder="Your email">
+        </div>
+        <div class="form-group">
+          <label for="signup-password">Password</label>
+          <input type="password" id="signup-password" required placeholder="Create a password">
+        </div>
+        <button type="submit" class="btn btn-primary">Create Account</button>
+        <div class="google-auth">
+          <button type="button" id="google-signup" class="btn btn-google">
+            <img src="images/google-icon.png" alt="Google">
+            Sign up with Google
+          </button>
+        </div>
+        <p class="form-footer">
+          Already have an account? <a href="#" id="show-login">Sign In</a>
+        </p>
+      </form>
+    </div>
+  </div>
+
+  <!-- Dashboard Section -->
+  <div id="dashboard-section" class="section">
+    <header class="dashboard-header">
+      <div class="user-info">
+        <img id="user-avatar" src="images/avatar-placeholder.png" alt="User Avatar">
+        <div class="user-details">
+          <h2 id="user-name">User Name</h2>
+          <p id="user-email">user@example.com</p>
+        </div>
+      </div>
+      <button id="logout-btn" class="btn btn-logout">Logout</button>
+    </header>
+
+    <div class="streak-summary">
+      <div class="streak-card">
+        <div class="streak-value" id="today-count">0</div>
+        <div class="streak-label">Today's Applications</div>
+      </div>
+      <div class="streak-card">
+        <div class="streak-value" id="streak-count">0</div>
+        <div class="streak-label">Day Streak</div>
+      </div>
+      <div class="streak-card">
+        <div class="streak-value" id="total-count">0</div>
+        <div class="streak-label">Total Applications</div>
+      </div>
+    </div>
+
+    <div class="chart-container">
+      <canvas id="applications-chart"></canvas>
+    </div>
+
+    <div class="section-title">
+      <h3>Recent Applications</h3>
+      <a href="#" id="view-all-apps">View All</a>
+    </div>
+
+    <div class="recent-applications" id="recent-applications-list">
+      <!-- This will be populated dynamically -->
+      <div class="empty-state">No applications tracked yet.</div>
+    </div>
+
+    <div class="section-title">
+      <h3>Friends' Streaks</h3>
+      <a href="#" id="invite-friends">Invite Friends</a>
+    </div>
+
+    <div class="friends-list" id="friends-list">
+      <!-- This will be populated dynamically -->
+      <div class="empty-state">Add friends to see their streaks.</div>
+    </div>
+
+    <div class="invite-container">
+      <div class="invite-field">
+        <input type="text" id="invite-link" readonly value="https://jobs-streak.web.app/invite/your-code">
+        <button id="copy-invite" class="btn btn-copy">Copy</button>
+      </div>
+    </div>
+
+    <nav class="bottom-nav">
+      <button class="nav-item active" data-tab="dashboard">
+        <span class="nav-icon">📊</span>
+        <span class="nav-label">Dashboard</span>
+      </button>
+      <button class="nav-item" data-tab="history">
+        <span class="nav-icon">📝</span>
+        <span class="nav-label">History</span>
+      </button>
+      <button class="nav-item" data-tab="social">
+        <span class="nav-icon">👥</span>
+        <span class="nav-label">Friends</span>
+      </button>
+      <button class="nav-item" data-tab="settings">
+        <span class="nav-icon">⚙️</span>
+        <span class="nav-label">Settings</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- Error message toast -->
+  <div id="error-toast" class="toast">
+    <div class="toast-content" id="error-message"></div>
+  </div>
+
+  <script src="popup.js"></script>
+  <script src="firebase-test-local.js"></script>
+</body>
+</html> 

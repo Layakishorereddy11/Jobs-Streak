@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Welcome to Jobs Streak</title>
+  <link rel="stylesheet" href="onboarding.css">
+  <script src="lib/firebase-app-compat.js"></script>
+  <script src="lib/firebase-auth-compat.js"></script>
+  <script src="lib/firebase-firestore-compat.js"></script>
+  <script src="lib/firebase-database-compat.js"></script>
+  <script src="firebaseInit.js"></script>
+</head>
+<body>
+  <div class="onboarding-container">
+    <div class="onboarding-carousel">
+      <!-- Step 1: Welcome -->
+      <div class="onboarding-step active" data-step="1">
+        <div class="onboarding-content">
+          <img src="images/icon128.png" alt="Jobs Streak" class="app-logo">
+          <h1>Welcome to Jobs Streak</h1>
+          <p>Track your job applications and maintain your daily streak!</p>
+          <div class="illustration">
+            <img src="images/onboarding-welcome.png" alt="Welcome Illustration">
+          </div>
+          <div class="step-controls">
+            <button class="btn btn-primary" id="step-1-next">Get Started</button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Step 2: How it works -->
+      <div class="onboarding-step" data-step="2">
+        <div class="onboarding-content">
+          <h2>How It Works</h2>
+          <p>Job Streak makes it easy to track your job applications and build a consistent habit.</p>
+          
+          <div class="feature-item">
+            <div class="feature-icon">📊</div>
+            <div class="feature-text">
+              <h3>Track Applications</h3>
+              <p>Automatically track jobs you've applied to with a single click.</p>
+            </div>
+          </div>
+          
+          <div class="feature-item">
+            <div class="feature-icon">🔥</div>
+            <div class="feature-text">
+              <h3>Build Your Streak</h3>
+              <p>Apply to at least 20 jobs daily to build and maintain your streak.</p>
+            </div>
+          </div>
+          
+          <div class="feature-item">
+            <div class="feature-icon">👥</div>
+            <div class="feature-text">
+              <h3>Compete With Friends</h3>
+              <p>Invite friends to compare streaks and stay motivated together.</p>
+            </div>
+          </div>
+          
+          <div class="step-controls">
+            <button class="btn btn-secondary" id="step-2-prev">Back</button>
+            <button class="btn btn-primary" id="step-2-next">Next</button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Step 3: Account Creation -->
+      <div class="onboarding-step" data-step="3">
+        <div class="onboarding-content">
+          <h2>Create Your Account</h2>
+          <p>Sign up to start tracking your job applications and build your streak.</p>
+          
+          <div class="auth-forms">
+            <!-- Signup Form -->
+            <form id="onboarding-signup-form">
+              <div class="form-group">
+                <label for="signup-name">Full Name</label>
+                <input type="text" id="signup-name" required placeholder="Your name">
+              </div>
+              <div class="form-group">
+                <label for="signup-email">Email</label>
+                <input type="email" id="signup-email" required placeholder="Your email">
+              </div>
+              <div class="form-group">
+                <label for="signup-password">Password</label>
+                <input type="password" id="signup-password" required placeholder="Create a password">
+              </div>
+              <button type="submit" class="btn btn-primary">Create Account</button>
+              
+              <div class="google-auth">
+                <button type="button" id="google-signup" class="btn btn-google">
+                  <img src="images/google-icon.png" alt="Google">
+                  Sign up with Google
+                </button>
+              </div>
+              
+              <p class="form-footer">
+                Already have an account? <a href="#" id="show-login">Sign In</a>
+              </p>
+            </form>
+            
+            <!-- Login Form -->
+            <form id="onboarding-login-form">
+              <h2>Sign In</h2>
+              <div class="form-group">
+                <label for="login-email">Email</label>
+                <input type="email" id="login-email" required placeholder="Your email">
+              </div>
+              <div class="form-group">
+                <label for="login-password">Password</label>
+                <input type="password" id="login-password" required placeholder="Your password">
+              </div>
+              <button type="submit" class="btn btn-primary">Sign In</button>
+              
+              <div class="google-auth">
+                <button type="button" id="google-signin" class="btn btn-google">
+                  <img src="images/google-icon.png" alt="Google">
+                  Sign in with Google
+                </button>
+              </div>
+              
+              <p class="form-footer">
+                Don't have an account? <a href="#" id="show-signup">Sign Up</a>
+              </p>
+            </form>
+          </div>
+          
+          <div class="step-controls">
+            <button class="btn btn-secondary" id="step-3-prev">Back</button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Step 4: Success -->
+      <div class="onboarding-step" data-step="4">
+        <div class="onboarding-content">
+          <div class="success-animation">
+            <svg class="checkmark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 52">
+              <circle class="checkmark__circle" cx="26" cy="26" r="25" fill="none"/>
+              <path class="checkmark__check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
+            </svg>
+          </div>
+          
+          <h2>You're all set!</h2>
+          <p>Start tracking your job applications and build your streak.</p>
+          
+          <div class="step-controls">
+            <button class="btn btn-primary" id="finish-onboarding">Get Started</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Error message toast -->
+  <div id="error-toast" class="toast">
+    <div class="toast-content" id="error-message"></div>
+  </div>
+  
+  <script src="onboarding.js"></script>
+  <script src="firebase-test-local.js"></script>
+</body>
+</html> 
