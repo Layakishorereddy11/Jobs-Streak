@@ -1,3 +1,6 @@
+// Make sure the alarms permission is in the manifest.json file:
+// "permissions": ["tabs", "storage", "identity", "activeTab", "alarms"]
+
 // Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyAEJrsFagxQs8KmaG47fKKzcC_81LAJ4R8",
@@ -9,7 +12,6 @@ const firebaseConfig = {
   appId: "1:848377435066:web:a809f63b3b1a99c9768383",
   measurementId: "G-87ZXGEFB07"
 };
-// Initialize Firebase (done via popup.js and firebaseInit.js)
 
 // Listen for installation
 chrome.runtime.onInstalled.addListener((details) => {
@@ -19,11 +21,6 @@ chrome.runtime.onInstalled.addListener((details) => {
       url: chrome.runtime.getURL('onboarding.html')
     });
   }
-});
-
-// Check for day change on startup
-chrome.runtime.onStartup.addListener(async () => {
-  checkDayChange();
 });
 
 // Function to check if day has changed and update streak accordingly
@@ -65,9 +62,18 @@ const checkDayChange = async () => {
 
 // Function to sync data with Firebase
 const syncWithFirebase = (userId, stats) => {
-  // This will be implemented with Firebase SDK in the popup
-  // For now, we'll just store it locally
+  console.log('Background script queueing sync for user:', userId);
+  
+  // Store locally
   chrome.storage.local.set({ stats });
+  
+  // Queue sync operation for when popup opens
+  chrome.storage.local.set({ 
+    pendingSync: { 
+      userId, 
+      timestamp: Date.now() 
+    }
+  });
   
   // Send message to all tabs to refresh stats
   chrome.tabs.query({}, (tabs) => {
@@ -77,6 +83,16 @@ const syncWithFirebase = (userId, stats) => {
     });
   });
 };
+
+// Schedule daily check
+chrome.alarms.create('dailyCheck', { periodInMinutes: 60 }); // Check every hour
+
+// Listen for scheduled checks
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'dailyCheck') {
+    checkDayChange();
+  }
+});
 
 // Listen for messages from content script or popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {

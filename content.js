@@ -62,85 +62,323 @@ const checkAndResetDailyCount = async (stats) => {
 
 // Function to create and inject job tracking UI
 const createJobTrackingUI = async () => {
-  // Check if the user is authenticated
-  const isAuthenticated = await checkAuthentication();
-  if (!isAuthenticated) {
-    return;
-  }
-  
-  // Get user stats
-  let stats = await getUserStats();
-  stats = await checkAndResetDailyCount(stats);
-  await updateStats(stats);
-  
-  // Create the UI container
-  const container = document.createElement('div');
-  container.id = 'job-streak-container';
-  container.innerHTML = `
-    <div class="job-streak-widget">
-      <div class="job-streak-header">
-        <img src="${chrome.runtime.getURL('images/icon48.png')}" alt="Jobs Streak" />
-        <h3>Jobs Streak</h3>
-        <button id="job-streak-close">×</button>
-      </div>
-      <div class="job-streak-stats">
-        <div class="stat-box">
-          <span class="stat-count">${stats.todayCount}</span>
-          <span class="stat-label">Today</span>
-        </div>
-        <div class="stat-box">
-          <span class="stat-count">${stats.streak}</span>
-          <span class="stat-label">Day Streak</span>
-        </div>
-      </div>
-      <div class="job-streak-actions">
-        <button id="track-job">Track Application</button>
-        <button id="track-url">Track & Save URL</button>
-      </div>
-    </div>
-  `;
-  
-  document.body.appendChild(container);
-  
-  // Add event listeners
-  document.getElementById('job-streak-close').addEventListener('click', () => {
-    container.style.display = 'none';
-  });
-  
-  document.getElementById('track-job').addEventListener('click', async () => {
-    stats.todayCount += 1;
-    await updateStats(stats);
-    document.querySelector('.stat-box:first-child .stat-count').textContent = stats.todayCount;
-    // Check if streak should be updated
-    if (stats.todayCount >= 20 && stats.todayCount - 1 < 20) {
-      stats.streak += 1;
-      document.querySelector('.stat-box:nth-child(2) .stat-count').textContent = stats.streak;
-      await updateStats(stats);
+  try {
+    // Remove existing container if it exists
+    const existingContainer = document.getElementById('job-streak-container');
+    if (existingContainer) {
+      existingContainer.remove();
     }
-  });
-  
-  document.getElementById('track-url').addEventListener('click', async () => {
-    stats.todayCount += 1;
-    const jobUrl = window.location.href;
-    const today = new Date().toISOString().split('T')[0];
     
-    stats.appliedJobs.push({
-      url: jobUrl,
-      title: document.title,
-      date: today,
-      timestamp: new Date().toISOString()
+    // Check if the user is authenticated
+    const isAuthenticated = await checkAuthentication();
+    if (!isAuthenticated) {
+      return;
+    }
+    
+    // Get user stats
+    let stats = await getUserStats();
+    stats = await checkAndResetDailyCount(stats);
+    await updateStats(stats);
+    
+    // Get current URL
+    const currentUrl = window.location.href;
+    
+    // Check if any URL was last tracked (for button state)
+    const lastTrackedJob = stats.appliedJobs.find(job => job.lastTracked === true);
+    const isCurrentUrlTracked = lastTrackedJob && lastTrackedJob.url === currentUrl;
+    
+    // Set button states based on current URL
+    const trackDisabled = isCurrentUrlTracked ? 'disabled' : '';
+    const removeDisabled = !isCurrentUrlTracked ? 'disabled' : '';
+    
+    // Create the UI container
+    const container = document.createElement('div');
+    container.id = 'job-streak-container';
+    container.innerHTML = `
+      <div class="job-streak-widget">
+        <div class="job-streak-header">
+          <img src="${chrome.runtime.getURL('images/icon48.png')}" alt="Jobs Streak" />
+          <h3>Jobs Streak</h3>
+          <button id="job-streak-close">×</button>
+        </div>
+        <div class="job-streak-stats">
+          <div class="stat-box">
+            <span class="stat-count">${stats.todayCount}</span>
+            <span class="stat-label">Today</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-count">${stats.streak}</span>
+            <span class="stat-label">Day Streak</span>
+          </div>
+        </div>
+        <div class="job-streak-actions">
+          <button id="track-job" class="job-streak-button track" ${trackDisabled}>
+            <span class="button-icon">+</span>
+            Track Application
+          </button>
+          <button id="remove-job" class="job-streak-button remove" ${removeDisabled}>
+            <span class="button-icon">-</span>
+            Remove Application
+          </button>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(container);
+    
+    // Add event listeners
+    document.getElementById('job-streak-close').addEventListener('click', () => {
+      container.style.display = 'none';
     });
     
-    await updateStats(stats);
-    document.querySelector('.stat-box:first-child .stat-count').textContent = stats.todayCount;
+    document.getElementById('track-job').addEventListener('click', async () => {
+      // Store references to buttons
+      const trackButton = document.getElementById('track-job');
+      const removeButton = document.getElementById('remove-job');
+      
+      // Check if buttons still exist
+      if (!trackButton || !removeButton) return;
+      
+      // Show loading state
+      trackButton.classList.add('loading');
+      trackButton.disabled = true;
+      
+      try {
+        // Get the current URL
+        const jobUrl = window.location.href;
+        
+        // Check if this URL is already tracked
+        const lastTrackedJob = stats.appliedJobs.find(job => job.lastTracked === true);
+        if (lastTrackedJob && lastTrackedJob.url === jobUrl) {
+          // This URL is already tracked
+          trackButton.classList.remove('loading');
+          trackButton.classList.add('warning');
+          
+          // Use safer way to update text content
+          const buttonTextSpan = trackButton.querySelector('.btn-text') || trackButton;
+          if (buttonTextSpan) buttonTextSpan.textContent = 'Already tracked';
+          
+          // Reset button after delay
+          setTimeout(() => {
+            // Check if element still exists
+            const refreshedTrackButton = document.getElementById('track-job');
+            const refreshedRemoveButton = document.getElementById('remove-job');
+            if (!refreshedTrackButton || !refreshedRemoveButton) return;
+            
+            refreshedTrackButton.classList.remove('warning');
+            refreshedTrackButton.disabled = true;
+            refreshedTrackButton.innerHTML = '<span class="button-icon">+</span> Track Application';
+            
+            // Make sure remove button is enabled
+            refreshedRemoveButton.disabled = false;
+          }, 2000);
+          
+          return;
+        }
+        
+        // Increment count
+        stats.todayCount += 1;
+        
+        // Save URL and info
+        const today = new Date().toISOString().split('T')[0];
+        
+        // Clear any previous lastTracked flags
+        stats.appliedJobs.forEach(job => job.lastTracked = false);
+        
+        stats.appliedJobs.push({
+          url: jobUrl,
+          title: document.title,
+          date: today,
+          timestamp: new Date().toISOString(),
+          lastTracked: true // Flag to identify the last tracked URL
+        });
+        
+        // Update stats
+        await updateStats(stats);
+        
+        // Update UI - safely with null checks
+        const todayCountElement = document.querySelector('.stat-box:first-child .stat-count');
+        if (todayCountElement) todayCountElement.textContent = stats.todayCount;
+        
+        // Check if streak should be updated
+        if (stats.todayCount >= 20 && stats.todayCount - 1 < 20) {
+          stats.streak += 1;
+          const streakCountElement = document.querySelector('.stat-box:nth-child(2) .stat-count');
+          if (streakCountElement) streakCountElement.textContent = stats.streak;
+        }
+        
+        // Check if trackButton still exists before using it
+        if (trackButton && document.body.contains(trackButton)) {
+          // Show success state
+          trackButton.classList.remove('loading');
+          trackButton.classList.add('success');
+          
+          // Use safer way to update text
+          const buttonTextSpan = trackButton.querySelector('.btn-text') || trackButton;
+          if (buttonTextSpan) buttonTextSpan.textContent = 'Added!';
+        }
+        
+        // Check if removeButton still exists
+        if (removeButton && document.body.contains(removeButton)) {
+          // Enable remove button and keep track button disabled
+          removeButton.disabled = false;
+        }
+        
+        // Send message to background to sync with Firebase
+        chrome.runtime.sendMessage({ action: 'syncStats' })
+          .catch(error => {
+            console.log("Could not send sync message:", error);
+          });
+        
+        // Reset button after delay with null checks
+        setTimeout(() => {
+          // Get fresh references in case DOM has changed
+          const refreshedTrackButton = document.getElementById('track-job');
+          if (refreshedTrackButton) {
+            refreshedTrackButton.classList.remove('success');
+            refreshedTrackButton.disabled = true; // Keep disabled until remove is clicked
+            refreshedTrackButton.innerHTML = '<span class="button-icon">+</span> Track Application';
+          }
+        }, 2000);
+        
+      } catch (error) {
+        console.error("Error tracking application:", error);
+        
+        // Null check before using trackButton
+        if (trackButton && document.body.contains(trackButton)) {
+          trackButton.classList.remove('loading');
+          trackButton.classList.add('error');
+          
+          setTimeout(() => {
+            // Get fresh reference in case DOM has changed
+            const refreshedTrackButton = document.getElementById('track-job');
+            if (refreshedTrackButton) {
+              refreshedTrackButton.classList.remove('error');
+              refreshedTrackButton.disabled = false;
+              refreshedTrackButton.innerHTML = '<span class="button-icon">+</span> Track Application';
+            }
+          }, 2000);
+        }
+      }
+    });
     
-    // Check if streak should be updated
-    if (stats.todayCount >= 20 && stats.todayCount - 1 < 20) {
-      stats.streak += 1;
-      document.querySelector('.stat-box:nth-child(2) .stat-count').textContent = stats.streak;
-      await updateStats(stats);
-    }
-  });
+    document.getElementById('remove-job').addEventListener('click', async () => {
+      // Store references to buttons
+      const removeButton = document.getElementById('remove-job');
+      const trackButton = document.getElementById('track-job');
+      
+      // Check if buttons still exist
+      if (!removeButton || !trackButton) return;
+      
+      // Show loading state
+      removeButton.classList.add('loading');
+      removeButton.disabled = true;
+      
+      try {
+        // Get current URL
+        const currentUrl = window.location.href;
+        
+        // Find the last tracked job for this URL
+        const lastTrackedIndex = stats.appliedJobs.findIndex(job => 
+          job.lastTracked === true && job.url === currentUrl
+        );
+        
+        if (lastTrackedIndex !== -1 && stats.todayCount > 0) {
+          // Decrement count
+          stats.todayCount -= 1;
+          
+          // Remove the job
+          stats.appliedJobs.splice(lastTrackedIndex, 1);
+          
+          // Update stats
+          await updateStats(stats);
+          
+          // Update UI - safely with null checks
+          const todayCountElement = document.querySelector('.stat-box:first-child .stat-count');
+          if (todayCountElement) todayCountElement.textContent = stats.todayCount;
+          
+          // Null check before using removeButton
+          if (removeButton && document.body.contains(removeButton)) {
+            // Show success state
+            removeButton.classList.remove('loading');
+            removeButton.classList.add('success');
+            
+            // Use safer way to update text
+            const buttonTextSpan = removeButton.querySelector('.btn-text') || removeButton;
+            if (buttonTextSpan) buttonTextSpan.textContent = 'Removed!';
+          }
+          
+          // Null check before using trackButton
+          if (trackButton && document.body.contains(trackButton)) {
+            // Enable track button
+            trackButton.disabled = false;
+          }
+          
+          // Send message to background to sync with Firebase
+          chrome.runtime.sendMessage({ action: 'syncStats' })
+            .catch(error => {
+              console.log("Could not send sync message:", error);
+            });
+        } else {
+          // Only proceed if elements still exist
+          if (removeButton && document.body.contains(removeButton)) {
+            // No applications to remove for this URL
+            removeButton.classList.remove('loading');
+            removeButton.classList.add('warning');
+            
+            // Use safer way to update text
+            const buttonTextSpan = removeButton.querySelector('.btn-text') || removeButton;
+            if (buttonTextSpan) buttonTextSpan.textContent = 'Nothing to remove';
+          }
+          
+          // Null check before using trackButton
+          if (trackButton && document.body.contains(trackButton)) {
+            // Enable track button since there's nothing to remove
+            trackButton.disabled = false;
+          }
+        }
+        
+        // Reset button after delay with null checks
+        setTimeout(() => {
+          // Get fresh references in case DOM has changed
+          const refreshedRemoveButton = document.getElementById('remove-job');
+          const refreshedTrackButton = document.getElementById('track-job');
+          
+          if (refreshedRemoveButton) {
+            refreshedRemoveButton.classList.remove('success', 'warning');
+            refreshedRemoveButton.disabled = true; // Keep disabled until track is clicked
+            refreshedRemoveButton.innerHTML = '<span class="button-icon">-</span> Remove Application';
+          }
+        }, 2000);
+      } catch (error) {
+        console.error("Error removing application:", error);
+        
+        // Null check before using removeButton
+        if (removeButton && document.body.contains(removeButton)) {
+          removeButton.classList.remove('loading');
+          removeButton.classList.add('error');
+          
+          setTimeout(() => {
+            // Get fresh references in case DOM has changed
+            const refreshedRemoveButton = document.getElementById('remove-job');
+            const refreshedTrackButton = document.getElementById('track-job');
+            
+            if (refreshedRemoveButton) {
+              refreshedRemoveButton.classList.remove('error');
+              refreshedRemoveButton.disabled = true;
+            }
+            
+            if (refreshedTrackButton) {
+              // Enable track button
+              refreshedTrackButton.disabled = false;
+            }
+          }, 2000);
+        }
+      }
+    });
+  } catch (error) {
+    console.error("Error creating job tracking UI:", error);
+  }
 };
 
 // Add event listener to inject UI after page load
@@ -150,6 +388,14 @@ window.addEventListener('load', () => {
   
   if (isJobSite) {
     createJobTrackingUI();
+    
+    // Listen for storage changes to update UI in real-time
+    chrome.storage.onChanged.addListener((changes, namespace) => {
+      if (namespace === 'local' && changes.stats) {
+        // Refresh the UI with updated data
+        createJobTrackingUI();
+      }
+    });
   }
 });
 
