@@ -10,14 +10,49 @@ const checkAuthentication = async () => {
 // Function to get user stats
 const getUserStats = async () => {
   return new Promise((resolve) => {
-    chrome.storage.local.get(['stats'], (result) => {
+    chrome.storage.local.get(['user', 'stats'], (result) => {
+      // First check if we have a user
+      if (!result.user) {
+        console.log('No user found in getUserStats');
+        resolve(null);
+        return;
+      }
+      
+      // Create userId for verification
+      const userId = result.user.uid;
+      
+      // Default stats with user ID 
       const defaultStats = {
+        userId: userId,
         todayCount: 0,
         streak: 0,
         lastUpdated: new Date().toISOString().split('T')[0],
         appliedJobs: []
       };
-      resolve(result.stats || defaultStats);
+      
+      // Verify and clean stats if they exist
+      if (result.stats) {
+        // Add userId if missing
+        if (!result.stats.userId) {
+          result.stats.userId = userId;
+        }
+        
+        // Ensure appliedJobs is an array
+        if (!Array.isArray(result.stats.appliedJobs)) {
+          result.stats.appliedJobs = [];
+        }
+        
+        // If stats belong to a different user, return default stats
+        if (result.stats.userId !== userId) {
+          console.log('Stats belong to different user, returning default stats');
+          resolve(defaultStats);
+          return;
+        }
+        
+        resolve(result.stats);
+      } else {
+        resolve(defaultStats);
+      }
     });
   });
 };
@@ -77,6 +112,20 @@ const createJobTrackingUI = async () => {
     
     // Get user stats
     let stats = await getUserStats();
+    if (!stats) {
+      stats = {
+        todayCount: 0,
+        streak: 0,
+        lastUpdated: new Date().toISOString().split('T')[0],
+        appliedJobs: []
+      };
+    }
+    
+    // Ensure appliedJobs exists
+    if (!Array.isArray(stats.appliedJobs)) {
+      stats.appliedJobs = [];
+    }
+    
     stats = await checkAndResetDailyCount(stats);
     await updateStats(stats);
     
@@ -84,7 +133,7 @@ const createJobTrackingUI = async () => {
     const currentUrl = window.location.href;
     
     // Check if any URL was last tracked (for button state)
-    const lastTrackedJob = stats.appliedJobs.find(job => job.lastTracked === true);
+    const lastTrackedJob = stats.appliedJobs.find(job => job && job.lastTracked === true);
     const isCurrentUrlTracked = lastTrackedJob && lastTrackedJob.url === currentUrl;
     
     // Set button states based on current URL
@@ -103,11 +152,11 @@ const createJobTrackingUI = async () => {
         </div>
         <div class="job-streak-stats">
           <div class="stat-box">
-            <span class="stat-count">${stats.todayCount}</span>
+            <span class="stat-count">${stats.todayCount || 0}</span>
             <span class="stat-label">Today</span>
           </div>
           <div class="stat-box">
-            <span class="stat-count">${stats.streak}</span>
+            <span class="stat-count">${stats.streak || 0}</span>
             <span class="stat-label">Day Streak</span>
           </div>
         </div>
@@ -224,10 +273,10 @@ const createJobTrackingUI = async () => {
           removeButton.disabled = false;
         }
         
-        // Sync with Firebase via background script
-        const syncSuccess = await syncWithFirebase();
+        // Sync with Firestore via background script
+        const syncSuccess = await syncWithFirestore();
         if (!syncSuccess) {
-          console.log('Firebase sync failed, data will sync later');
+          console.log('Firestore sync failed, data will sync later');
         }
         
         // Reset button after delay with null checks
@@ -314,10 +363,10 @@ const createJobTrackingUI = async () => {
             trackButton.disabled = false;
           }
           
-          // Sync with Firebase via background script
-          const syncSuccess = await syncWithFirebase();
+          // Sync with Firestore via background script
+          const syncSuccess = await syncWithFirestore();
           if (!syncSuccess) {
-            console.log('Firebase sync failed, data will sync later');
+            console.log('Firestore sync failed, data will sync later');
           }
         } else {
           // Only proceed if elements still exist
@@ -389,9 +438,9 @@ const createJobTrackingUI = async () => {
       const statsElement = document.querySelector('.job-streak-stats');
       statsElement.classList.add('syncing');
       
-      // Try to sync
-      console.log('Manual sync triggered');
-      const syncSuccess = await syncWithFirebase();
+      // Try to pull from Firestore
+      console.log('Manual sync triggered - pulling from Firestore');
+      const syncSuccess = await pullFromFirestore();
       
       // Visual feedback of sync result
       if (syncSuccess) {
@@ -408,8 +457,8 @@ const createJobTrackingUI = async () => {
         }, 1500);
       }
       
-      // Also refresh UI to make sure it's up to date
-      await refreshUI();
+      // Refresh UI to show updated data
+      await refreshUI(true);
     });
   } catch (error) {
     console.error("Error creating job tracking UI:", error);
@@ -417,53 +466,112 @@ const createJobTrackingUI = async () => {
 };
 
 // Function to refresh the UI without recreating it
-const refreshUI = async () => {
-  // Check if UI exists, if not recreate it
-  const container = document.getElementById('job-streak-container');
-  if (!container) {
-    console.log('UI container not found, recreating');
-    createJobTrackingUI();
-    return;
-  }
+const refreshUI = async (skipSync = true) => {
+  try {
+    // Check if UI exists, if not recreate it
+    const container = document.getElementById('job-streak-container');
+    if (!container) {
+      console.log('UI container not found, recreating');
+      createJobTrackingUI();
+      return;
+    }
 
-  // Get latest stats
-  let stats = await getUserStats();
-  
-  // Update counter displays
-  const todayCountElement = document.querySelector('.stat-box:first-child .stat-count');
-  const streakCountElement = document.querySelector('.stat-box:nth-child(2) .stat-count');
-  
-  if (todayCountElement) {
-    todayCountElement.textContent = stats.todayCount;
-  }
-  
-  if (streakCountElement) {
-    streakCountElement.textContent = stats.streak;
-  }
-  
-  // Reset button states based on current URL
-  const currentUrl = window.location.href;
-  const lastTrackedJob = stats.appliedJobs.find(job => job.lastTracked === true);
-  const isCurrentUrlTracked = lastTrackedJob && lastTrackedJob.url === currentUrl;
-  
-  const trackButton = document.getElementById('track-job');
-  const removeButton = document.getElementById('remove-job');
-  
-  if (!trackButton || !removeButton) {
-    console.log('Buttons not found, recreating UI');
+    // Get latest stats
+    let stats = await getUserStats();
+    if (!stats) {
+      console.log('No stats found, recreating UI');
+      createJobTrackingUI();
+      return;
+    }
+    
+    // Ensure stats has appliedJobs
+    if (!stats.appliedJobs) {
+      stats.appliedJobs = [];
+    }
+    
+    // Update counter displays
+    const todayCountElement = document.querySelector('.stat-box:first-child .stat-count');
+    const streakCountElement = document.querySelector('.stat-box:nth-child(2) .stat-count');
+    
+    if (todayCountElement) {
+      todayCountElement.textContent = stats.todayCount || 0;
+    }
+    
+    if (streakCountElement) {
+      streakCountElement.textContent = stats.streak || 0;
+    }
+    
+    // Reset button states based on current URL
+    const currentUrl = window.location.href;
+    const lastTrackedJob = Array.isArray(stats.appliedJobs) 
+      ? stats.appliedJobs.find(job => job && job.lastTracked === true) 
+      : null;
+    const isCurrentUrlTracked = lastTrackedJob && lastTrackedJob.url === currentUrl;
+    
+    const trackButton = document.getElementById('track-job');
+    const removeButton = document.getElementById('remove-job');
+    
+    if (!trackButton || !removeButton) {
+      console.log('Buttons not found, recreating UI');
+      createJobTrackingUI();
+      return;
+    }
+    
+    // Reset button states and appearances
+    trackButton.disabled = isCurrentUrlTracked;
+    trackButton.classList.remove('loading', 'success', 'error', 'warning');
+    trackButton.innerHTML = '<span class="button-icon">+</span> Track Application';
+    
+    removeButton.disabled = !isCurrentUrlTracked;
+    removeButton.classList.remove('loading', 'success', 'error', 'warning');
+    removeButton.innerHTML = '<span class="button-icon">-</span> Remove Application';
+    
+    // Only sync with Firestore if explicitly requested
+    if (!skipSync) {
+      // Pull latest data from Firestore
+      await pullFromFirestore();
+    }
+  } catch (error) {
+    console.error('Error refreshing UI:', error);
+    // If there's an error, try recreating the UI from scratch
     createJobTrackingUI();
-    return;
   }
-  
-  // Reset button states and appearances
-  trackButton.disabled = isCurrentUrlTracked;
-  trackButton.classList.remove('loading', 'success', 'error', 'warning');
-  trackButton.innerHTML = '<span class="button-icon">+</span> Track Application';
-  
-  removeButton.disabled = !isCurrentUrlTracked;
-  removeButton.classList.remove('loading', 'success', 'error', 'warning');
-  removeButton.innerHTML = '<span class="button-icon">-</span> Remove Application';
 };
+
+// Function to pull data from Firestore without pushing
+const pullFromFirestore = async () => {
+  try {
+    const userData = await new Promise(resolve => {
+      chrome.storage.local.get(['user'], (result) => {
+        resolve(result);
+      });
+    });
+    
+    if (!userData.user) {
+      console.log('No user found, skipping Firestore pull');
+      return false;
+    }
+    
+    // Send message to get data from Firestore
+    const response = await chrome.runtime.sendMessage({ 
+      action: 'getStats', 
+      userId: userData.user.uid 
+    });
+    
+    return response && response.success;
+  } catch (error) {
+    console.error('Error pulling from Firestore:', error);
+    return false;
+  }
+};
+
+// Set up periodic UI refresh every 500 milliseconds (half a second)
+setInterval(() => {
+  // Just refresh UI without syncing to Firestore
+  refreshUI(true).catch(error => {
+    console.error('Error in periodic UI refresh:', error);
+  });
+}, 500);
 
 // Create and inject UI when page loads
 window.addEventListener('load', createJobTrackingUI);
@@ -471,12 +579,23 @@ window.addEventListener('load', createJobTrackingUI);
 // Listen for messages from background script
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'refreshStats') {
-    // Refresh UI with latest data
-    refreshUI().catch(error => {
+    // Refresh UI with latest data AND pull from Firestore
+    refreshUI(false).catch(error => {
       console.error('Error refreshing UI:', error);
     });
     sendResponse({ status: 'success' });
   }
+  
+  if (request.action === 'userLoggedOut') {
+    console.log('User logged out, removing UI');
+    // Remove the tracking UI when user logs out
+    const container = document.getElementById('job-streak-container');
+    if (container) {
+      container.remove();
+    }
+    sendResponse({ status: 'success' });
+  }
+  
   return true; // Keep message channel open for async response
 });
 
@@ -486,17 +605,39 @@ new MutationObserver(() => {
   const currentUrl = window.location.href;
   if (currentUrl !== lastUrl) {
     lastUrl = currentUrl;
-    // URL changed, refresh the UI
-    refreshUI().catch(error => {
+    // URL changed, refresh the UI without pushing to Firestore
+    refreshUI(true).catch(error => {
       console.error('Error refreshing UI after URL change:', error);
     });
   }
 }).observe(document, { subtree: true, childList: true });
 
-// Function to sync with Firebase via background script
-const syncWithFirebase = async () => {
+// Function to sync with Firestore via background script
+const syncWithFirestore = async () => {
   console.log('Sending syncStats message to background script');
   try {
+    // Make sure we have user and stats data before attempting to sync
+    const userData = await new Promise(resolve => {
+      chrome.storage.local.get(['user', 'stats'], (result) => {
+        resolve(result);
+      });
+    });
+    
+    // If no user or stats, don't sync
+    if (!userData.user || !userData.stats) {
+      console.log('No user or stats found, skipping sync');
+      return false;
+    }
+    
+    // Make sure stats has userId for verification
+    if (!userData.stats.userId) {
+      userData.stats.userId = userData.user.uid;
+      await new Promise(resolve => {
+        chrome.storage.local.set({ stats: userData.stats }, resolve);
+      });
+    }
+    
+    // Send sync message to background script
     const response = await chrome.runtime.sendMessage({ action: 'syncStats' });
     console.log('Sync response:', response);
     if (response && response.status === 'success') {

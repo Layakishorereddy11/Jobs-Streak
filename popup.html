@@ -9,7 +9,6 @@
   <script src="lib/firebase-app-compat.js"></script>
   <script src="lib/firebase-auth-compat.js"></script>
   <script src="lib/firebase-firestore-compat.js"></script>
-  <script src="lib/firebase-database-compat.js"></script>
   <script src="lib/chart.js"></script>
   <!-- Firebase Initialization -->
   <script src="firebase-config.js"></script>
@@ -133,6 +132,12 @@
         <input type="text" id="invite-link" readonly value="https://jobs-streak.web.app/invite/your-code">
         <button id="copy-invite" class="btn btn-copy">Copy</button>
       </div>
+    </div>
+    
+    <!-- Debug Tools -->
+    <div class="debug-tools" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 10px;">
+      <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #666;">Developer Tools</h4>
+      <button id="clear-storage-btn" class="btn" style="background: #f44336; color: white; font-size: 12px;">Clear Storage Data</button>
     </div>
 
     <nav class="bottom-nav">

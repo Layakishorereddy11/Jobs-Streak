@@ -1,15 +1,8 @@
 // Make sure the alarms permission is in the manifest.json file:
 // "permissions": ["tabs", "storage", "identity", "activeTab", "alarms"]
 
-// Background script counter for testing service worker lifecycle
-let backgroundCounter = 1;
-
-// Set up a counter test alarm
-chrome.alarms.create('counterTest', { periodInMinutes: 1/60 }); // Every second
-
-// Import Firebase SDK
+// Import Firebase SDK (only the necessary modules)
 importScripts('lib/firebase-app-compat.js');
-importScripts('lib/firebase-database-compat.js');
 importScripts('lib/firebase-firestore-compat.js');
 importScripts('lib/firebase-auth-compat.js');
 
@@ -17,7 +10,6 @@ importScripts('lib/firebase-auth-compat.js');
 const firebaseConfig = {
   apiKey: "AIzaSyAEJrsFagxQs8KmaG47fKKzcC_81LAJ4R8",
   authDomain: "jobs-streak.firebaseapp.com",
-  databaseURL: "https://jobs-streak-default-rtdb.firebaseio.com",
   projectId: "jobs-streak",
   storageBucket: "jobs-streak.firebasestorage.app",
   messagingSenderId: "848377435066",
@@ -27,7 +19,6 @@ const firebaseConfig = {
 
 // Initialize Firebase when service worker starts
 let firebaseInitialized = false;
-let connectionMonitor = null;
 let firestoreDB = null;
 
 function initializeFirebaseIfNeeded() {
@@ -43,23 +34,6 @@ function initializeFirebaseIfNeeded() {
       
       // Initialize Firestore
       firestoreDB = firebase.firestore();
-      
-      // Ensure we're connected to Firebase
-      firebase.database().goOnline();
-      
-      // Monitor connection status
-      if (!connectionMonitor) {
-        connectionMonitor = firebase.database().ref('.info/connected');
-        connectionMonitor.on('value', (snap) => {
-          const connected = snap.val();
-          console.log('Firebase connection status:', connected ? 'connected' : 'disconnected');
-          
-          // If we've reconnected, check for pending syncs
-          if (connected) {
-            retryPendingSync();
-          }
-        });
-      }
       
       firebaseInitialized = true;
       console.log('Firebase initialized in background script');
@@ -84,12 +58,12 @@ const retryPendingSync = () => {
       
       // If we have the stats directly in pendingSync, use them
       if (result.pendingSync.stats) {
-        syncWithFirebase(userId, result.pendingSync.stats);
+        syncWithFirestore(userId, result.pendingSync.stats);
       } else {
         // Otherwise get the current stats
         chrome.storage.local.get(['stats'], (statsResult) => {
           if (statsResult.stats) {
-            syncWithFirebase(userId, statsResult.stats);
+            syncWithFirestore(userId, statsResult.stats);
           }
         });
       }
@@ -98,7 +72,7 @@ const retryPendingSync = () => {
 };
 
 // Set up a periodic check for pending syncs
-chrome.alarms.create('syncRetry', { periodInMinutes: 1/60 }); // Check every 5 minutes
+chrome.alarms.create('syncRetry', { periodInMinutes: 5 }); // Check every 5 minutes
 
 // Listen for installation
 chrome.runtime.onInstalled.addListener((details) => {
@@ -147,14 +121,14 @@ const checkDayChange = async () => {
       
       // Update storage
       chrome.storage.local.set({ stats }, () => {
-        syncWithFirebase(result.user.uid, stats);
+        syncWithFirestore(result.user.uid, stats);
       });
     }
   });
 };
 
-// Function to sync data with Firebase
-const syncWithFirebase = (userId, stats) => {
+// Function to sync data with Firestore
+const syncWithFirestore = (userId, stats) => {
   console.log('Background script syncing immediately for user:', userId);
   
   // Make sure Firebase is initialized
@@ -170,106 +144,89 @@ const syncWithFirebase = (userId, stats) => {
     return;
   }
   
-  let realTimeSuccess = false;
-  let firestoreSuccess = false;
-  
-  // First, update Firebase Realtime Database
-  try {
-    console.log('Creating new Firebase database reference');
-    // Create a fresh database reference each time to avoid stale connections
-    const dbRef = firebase.database().ref(`users/${userId}/stats`);
-    
-    // Set persistence to ensure data is written immediately
-    firebase.database().goOnline();
-    
-    // Use set with force write (with server timestamp to ensure freshness)
-    dbRef.set({
-      ...stats,
-      _serverTimestamp: firebase.database.ServerValue.TIMESTAMP
-    })
-      .then(() => {
-        console.log('Firebase Realtime DB updated successfully.');
-        realTimeSuccess = true;
-        checkSyncComplete();
-      })
-      .catch((err) => {
-        console.error('Error updating Firebase Realtime DB:', err);
-        realTimeSuccess = false;
-        checkSyncComplete();
-      });
-  } catch (error) {
-    console.error('Failed to access Firebase Realtime DB:', error);
-    realTimeSuccess = false;
-    checkSyncComplete();
+  // Validate stats object
+  if (!stats || typeof stats !== 'object') {
+    console.error('Invalid stats object:', stats);
+    return;
   }
   
-  // Second, update Firestore
+  // Ensure stats has userId
+  if (!stats.userId) {
+    stats.userId = userId;
+  }
+  
+  // Ensure stats has appliedJobs array
+  if (!Array.isArray(stats.appliedJobs)) {
+    stats.appliedJobs = [];
+  }
+  
+  // Clean stats object for Firestore - avoid nested structure
+  const cleanedStats = {
+    userId: stats.userId,
+    streak: stats.streak || 0,
+    todayCount: stats.todayCount || 0,
+    lastUpdated: stats.lastUpdated || new Date().toISOString().split('T')[0],
+    appliedJobs: stats.appliedJobs.map(job => ({
+      url: job.url || '',
+      title: job.title || '',
+      date: job.date || new Date().toISOString().split('T')[0],
+      lastTracked: Boolean(job.lastTracked),
+      timestamp: job.timestamp || new Date().toISOString(),
+      favicon: job.favicon || ''
+    })),
+    _timestamp: firebase.firestore.FieldValue.serverTimestamp()
+  };
+  
+  // Update Firestore
   try {
-    console.log('Updating Firestore document');
-    // Add timestamp for versioning
-    const statsWithTimestamp = {
-      ...stats,
-      _timestamp: firebase.firestore.FieldValue.serverTimestamp()
-    };
+    console.log('Updating Firestore document with cleaned data');
     
     // Check if document exists
     firestoreDB.collection('users').doc(userId).get()
       .then((doc) => {
         if (doc.exists) {
           // Update existing document
-          return firestoreDB.collection('users').doc(userId).update({ 
-            stats: statsWithTimestamp 
-          });
+          return firestoreDB.collection('users').doc(userId).update(cleanedStats);
         } else {
           // Create new document with user info
-          const userData = {
-            stats: statsWithTimestamp,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-          };
-          return firestoreDB.collection('users').doc(userId).set(userData);
+          return firestoreDB.collection('users').doc(userId).set({
+            ...cleanedStats,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
         }
       })
       .then(() => {
         console.log('Firestore DB updated successfully.');
-        firestoreSuccess = true;
-        checkSyncComplete();
+        // Clear any pending sync after success
+        chrome.storage.local.set({
+          pendingSyncResolved: true
+        });
       })
       .catch((err) => {
         console.error('Error updating Firestore DB:', err);
-        firestoreSuccess = false;
-        checkSyncComplete();
+        // Store for retry
+        chrome.storage.local.set({
+          pendingSync: {
+            userId,
+            timestamp: Date.now(),
+            stats: stats
+          }
+        });
       });
   } catch (error) {
     console.error('Failed to access Firestore DB:', error);
-    firestoreSuccess = false;
-    checkSyncComplete();
+    // Save pending sync
+    chrome.storage.local.set({
+      pendingSync: {
+        userId,
+        timestamp: Date.now(),
+        stats: stats
+      }
+    });
   }
   
-  // Function to check if both syncs are complete and take appropriate action
-  function checkSyncComplete() {
-    const anySuccess = realTimeSuccess || firestoreSuccess;
-    
-    if (anySuccess) {
-      // At least one succeeded, clear any pending sync
-      chrome.storage.local.set({
-        pendingSyncResolved: true
-      });
-      console.log(`Sync status: Realtime DB: ${realTimeSuccess ? 'Success' : 'Failed'}, Firestore: ${firestoreSuccess ? 'Success' : 'Failed'}`);
-    } else {
-      // Both failed, store for retry
-      chrome.storage.local.set({
-        pendingSync: {
-          userId,
-          timestamp: Date.now(),
-          stats: stats
-        }
-      });
-      console.error('Both database updates failed, will retry later');
-    }
-  }
-  
-  // Update local chrome storage
-  chrome.storage.local.set({ stats });
+  // Update local chrome storage with cleaned structure
+  chrome.storage.local.set({ stats: cleanedStats });
   
   // Send message to all tabs so that content UIs refresh immediately
   chrome.tabs.query({}, (tabs) => {
@@ -279,9 +236,6 @@ const syncWithFirebase = (userId, stats) => {
     });
   });
 };
-
-// Set up Firebase health check for active connection
-chrome.alarms.create('firebaseHealthCheck', { periodInMinutes: 1 }); // Check every minute
 
 // Schedule daily check
 chrome.alarms.create('dailyCheck', { periodInMinutes: 60 }); // Check every hour
@@ -295,37 +249,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'syncRetry') {
     retryPendingSync();
   }
-  
-  if (alarm.name === 'firebaseHealthCheck') {
-    // Keep Firebase connection alive
-    if (firebaseInitialized) {
-      try {
-        firebase.database().goOnline();
-        // Ping the database to keep the connection alive
-        firebase.database().ref('.info/connected').once('value')
-          .then(snap => {
-            console.log('Firebase connection health check:', snap.val() ? 'connected' : 'disconnected');
-          })
-          .catch(err => {
-            console.warn('Firebase health check error:', err);
-          });
-      } catch (e) {
-        console.warn('Health check failed:', e);
-      }
-    }
-  }
-  
-  // Counter test
-  if (alarm.name === 'counterTest') {
-    console.log(`Background script counter: ${backgroundCounter}`);
-    backgroundCounter++;
-    
-    // Reset counter after reaching 1000
-    if (backgroundCounter > 1000) {
-      backgroundCounter = 1;
-      console.log('Counter reset to 1');
-    }
-  }
 });
 
 // Listen for messages from content script or popup
@@ -334,30 +257,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     console.log('Received syncStats message');
     chrome.storage.local.get(['user', 'stats'], (result) => {
       if (result.user && result.stats) {
-        console.log('Found user and stats, syncing with Firebase');
+        console.log('Found user and stats, syncing with Firestore');
         
         // Make sure Firebase is initialized before syncing
         if (initializeFirebaseIfNeeded()) {
-          // Ensure we go online in case connection was lost
-          try {
-            firebase.database().goOnline();
-            console.log('Firebase database connection re-established');
-          } catch (e) {
-            console.warn('Could not call goOnline:', e);
-          }
-          
-          // Call the sync function with a small delay to ensure database connection is ready
-          setTimeout(() => {
-            syncWithFirebase(result.user.uid, result.stats);
-          }, 100);
-          
+          // Call the sync function
+          syncWithFirestore(result.user.uid, result.stats);
           sendResponse({ status: 'success' });
         } else {
           console.error('Failed to initialize Firebase for sync');
           sendResponse({ status: 'error', message: 'Failed to initialize Firebase' });
         }
       } else {
-        console.error('Missing user or stats, cannot sync with Firebase');
+        console.error('Missing user or stats, cannot sync with Firestore');
         sendResponse({ status: 'error', message: 'Missing user or stats' });
       }
     });
@@ -374,6 +286,276 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     sendResponse({ status: 'success' });
     return true; // Keep the message channel open for async responses
+  }
+  
+  if (request.action === 'userLoggedOut') {
+    // Reset Firebase initialization state
+    firebaseInitialized = false;
+    firestoreDB = null;
+    
+    // Clear any stored data
+    chrome.storage.local.remove(['stats', 'pendingSync', 'pendingSyncResolved'], () => {
+      console.log('Background: User data cleared on logout');
+    });
+    
+    // Update all tabs to reflect logged out state
+    chrome.tabs.query({}, (tabs) => {
+      tabs.forEach((tab) => {
+        chrome.tabs.sendMessage(tab.id, { action: 'userLoggedOut' })
+          .catch(() => {}); // Ignore errors for tabs that don't have our content script
+      });
+    });
+    
+    sendResponse({ status: 'success' });
+    return true; // Keep the message channel open for async responses
+  }
+  
+  if (request.action === 'getStats') {
+    if (!request.userId) {
+      sendResponse({ success: false, message: 'No userId provided' });
+      return true;
+    }
+    
+    if (!firestoreDB) {
+      initializeFirebaseIfNeeded().then(() => {
+        // Get stats from Firestore
+        firestoreDB.collection('users').doc(request.userId).get()
+          .then((doc) => {
+            if (doc.exists) {
+              const docData = doc.data();
+              
+              // Prepare default stats
+              const defaultStats = {
+                userId: request.userId,
+                todayCount: 0,
+                streak: 0,
+                lastUpdated: new Date().toISOString().split('T')[0],
+                appliedJobs: []
+              };
+              
+              // Handle flattened structure (new format)
+              if (Array.isArray(docData.appliedJobs)) {
+                // This is the new flattened structure
+                const validStats = {
+                  userId: docData.userId || request.userId,
+                  todayCount: typeof docData.todayCount === 'number' ? docData.todayCount : 0,
+                  streak: typeof docData.streak === 'number' ? docData.streak : 0,
+                  lastUpdated: docData.lastUpdated || new Date().toISOString().split('T')[0],
+                  appliedJobs: Array.isArray(docData.appliedJobs) ? docData.appliedJobs : []
+                };
+                
+                sendResponse({ success: true, stats: validStats });
+              }
+              // Handle nested structure (old format)
+              else if (docData.stats && typeof docData.stats === 'object') {
+                // Using old nested structure, extract and convert
+                const stats = docData.stats;
+                
+                // Create flattened structure 
+                const flattenedStats = {
+                  userId: stats.userId || request.userId,
+                  todayCount: typeof stats.todayCount === 'number' ? stats.todayCount : 0,
+                  streak: typeof stats.streak === 'number' ? stats.streak : 0,
+                  lastUpdated: stats.lastUpdated || new Date().toISOString().split('T')[0],
+                  appliedJobs: Array.isArray(stats.appliedJobs) ? stats.appliedJobs : []
+                };
+                
+                // Update the document to use the new structure
+                firestoreDB.collection('users').doc(request.userId).update(flattenedStats)
+                  .catch(error => {
+                    console.error('Error updating document to new structure:', error);
+                  });
+                
+                sendResponse({ success: true, stats: flattenedStats });
+              } 
+              // Handle malformed document
+              else {
+                console.log('Document exists but has invalid structure, using default stats');
+                // Store default stats to Firestore
+                firestoreDB.collection('users').doc(request.userId).update(defaultStats)
+                  .catch(error => {
+                    console.error('Error creating default stats in Firestore:', error);
+                  });
+                
+                sendResponse({ success: true, stats: defaultStats });
+              }
+            } else {
+              // Create default stats for new user
+              const defaultStats = {
+                userId: request.userId,
+                todayCount: 0,
+                streak: 0,
+                lastUpdated: new Date().toISOString().split('T')[0],
+                appliedJobs: [],
+                _timestamp: firebase.firestore.FieldValue.serverTimestamp()
+              };
+              
+              // Create a new document
+              firestoreDB.collection('users').doc(request.userId).set({
+                ...defaultStats,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+              }).catch(error => {
+                console.error('Error creating new document:', error);
+              });
+              
+              sendResponse({ success: true, stats: defaultStats });
+            }
+          })
+          .catch((error) => {
+            console.error('Error getting stats from Firestore:', error);
+            sendResponse({ success: false, message: error.message });
+          });
+      });
+    } else {
+      // Same logic as above but without the initialization promise
+      firestoreDB.collection('users').doc(request.userId).get()
+        .then((doc) => {
+          if (doc.exists) {
+            const docData = doc.data();
+            
+            // Prepare default stats
+            const defaultStats = {
+              userId: request.userId,
+              todayCount: 0,
+              streak: 0,
+              lastUpdated: new Date().toISOString().split('T')[0],
+              appliedJobs: []
+            };
+            
+            // Handle flattened structure (new format)
+            if (Array.isArray(docData.appliedJobs)) {
+              // This is the new flattened structure
+              const validStats = {
+                userId: docData.userId || request.userId,
+                todayCount: typeof docData.todayCount === 'number' ? docData.todayCount : 0,
+                streak: typeof docData.streak === 'number' ? docData.streak : 0,
+                lastUpdated: docData.lastUpdated || new Date().toISOString().split('T')[0],
+                appliedJobs: Array.isArray(docData.appliedJobs) ? docData.appliedJobs : []
+              };
+              
+              sendResponse({ success: true, stats: validStats });
+            }
+            // Handle nested structure (old format)
+            else if (docData.stats && typeof docData.stats === 'object') {
+              // Using old nested structure, extract and convert
+              const stats = docData.stats;
+              
+              // Create flattened structure 
+              const flattenedStats = {
+                userId: stats.userId || request.userId,
+                todayCount: typeof stats.todayCount === 'number' ? stats.todayCount : 0,
+                streak: typeof stats.streak === 'number' ? stats.streak : 0,
+                lastUpdated: stats.lastUpdated || new Date().toISOString().split('T')[0],
+                appliedJobs: Array.isArray(stats.appliedJobs) ? stats.appliedJobs : []
+              };
+              
+              // Update the document to use the new structure
+              firestoreDB.collection('users').doc(request.userId).update(flattenedStats)
+                .catch(error => {
+                  console.error('Error updating document to new structure:', error);
+                });
+              
+              sendResponse({ success: true, stats: flattenedStats });
+            } 
+            // Handle malformed document
+            else {
+              console.log('Document exists but has invalid structure, using default stats');
+              // Store default stats to Firestore
+              firestoreDB.collection('users').doc(request.userId).update(defaultStats)
+                .catch(error => {
+                  console.error('Error creating default stats in Firestore:', error);
+                });
+              
+              sendResponse({ success: true, stats: defaultStats });
+            }
+          } else {
+            // Create default stats for new user
+            const defaultStats = {
+              userId: request.userId,
+              todayCount: 0,
+              streak: 0,
+              lastUpdated: new Date().toISOString().split('T')[0],
+              appliedJobs: [],
+              _timestamp: firebase.firestore.FieldValue.serverTimestamp()
+            };
+            
+            // Create a new document
+            firestoreDB.collection('users').doc(request.userId).set({
+              ...defaultStats,
+              createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            }).catch(error => {
+              console.error('Error creating new document:', error);
+            });
+            
+            sendResponse({ success: true, stats: defaultStats });
+          }
+        })
+        .catch((error) => {
+          console.error('Error getting stats from Firestore:', error);
+          sendResponse({ success: false, message: error.message });
+        });
+    }
+    
+    return true; // Keep the message channel open for async response
+  }
+  
+  if (request.action === 'updateStats') {
+    if (!request.userId || !request.stats) {
+      sendResponse({ success: false, message: 'Missing userId or stats' });
+      return true;
+    }
+    
+    // Validate stats object
+    if (!request.stats || typeof request.stats !== 'object') {
+      sendResponse({ success: false, message: 'Invalid stats object' });
+      return true;
+    }
+    
+    // Ensure required stats fields
+    const stats = request.stats;
+    
+    // Clean the stats object to use flattened structure
+    const cleanedStats = {
+      userId: stats.userId || request.userId,
+      todayCount: typeof stats.todayCount === 'number' ? stats.todayCount : 0,
+      streak: typeof stats.streak === 'number' ? stats.streak : 0,
+      lastUpdated: stats.lastUpdated || new Date().toISOString().split('T')[0],
+      appliedJobs: Array.isArray(stats.appliedJobs) ? stats.appliedJobs.map(job => ({
+        url: job.url || '',
+        title: job.title || '',
+        date: job.date || new Date().toISOString().split('T')[0],
+        lastTracked: Boolean(job.lastTracked),
+        timestamp: job.timestamp || new Date().toISOString(),
+        favicon: job.favicon || ''
+      })) : [],
+      _timestamp: firebase.firestore.FieldValue.serverTimestamp()
+    };
+    
+    if (!firestoreDB) {
+      initializeFirebaseIfNeeded().then(() => {
+        // Update stats in Firestore
+        firestoreDB.collection('users').doc(request.userId).set(cleanedStats, { merge: true })
+          .then(() => {
+            sendResponse({ success: true });
+          })
+          .catch((error) => {
+            console.error('Error updating stats in Firestore:', error);
+            sendResponse({ success: false, message: error.message });
+          });
+      });
+    } else {
+      // Update stats in Firestore
+      firestoreDB.collection('users').doc(request.userId).set(cleanedStats, { merge: true })
+        .then(() => {
+          sendResponse({ success: true });
+        })
+        .catch((error) => {
+          console.error('Error updating stats in Firestore:', error);
+          sendResponse({ success: false, message: error.message });
+        });
+    }
+    
+    return true; // Keep the message channel open for async response
   }
   
   return true; // Keep the message channel open for async responses

@@ -17,7 +17,7 @@ document.addEventListener('DOMContentLoaded', () => {
   chrome.storage.local.get(['pendingSync'], (result) => {
     if (result.pendingSync) {
       console.log('Found pending sync operation:', result.pendingSync);
-      const { userId, timestamp } = result.pendingSync;
+      const { userId, timestamp, pullOnly } = result.pendingSync;
       
       // Only process syncs that are less than 1 hour old
       const oneHourAgo = Date.now() - (60 * 60 * 1000);
@@ -26,20 +26,17 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Remove the pending sync first to prevent loops
         chrome.storage.local.remove(['pendingSync'], () => {
-          // Check if we have direct access to syncUserData
-          if (typeof syncUserData === 'function') {
-            syncUserData(userId);
+          if (pullOnly) {
+            // Only fetch data from Firestore
+            chrome.runtime.sendMessage({ 
+              action: 'getStats', 
+              userId: userId 
+            }).catch(error => {
+              console.log("Could not send getStats message to background", error);
+            });
           } else {
-            console.log('syncUserData not available yet, will retry after initialization');
-            
-            // Wait for Firebase to initialize
-            setTimeout(() => {
-              if (typeof syncUserData === 'function') {
-                syncUserData(userId);
-              } else {
-                console.error('syncUserData still not available after waiting');
-              }
-            }, 2000);
+            // Use background script's sync method
+            syncWithFirestore();
           }
         });
       } else {
@@ -258,8 +255,15 @@ document.addEventListener('DOMContentLoaded', () => {
   logoutBtn.addEventListener('click', () => {
     auth.signOut()
       .then(() => {
-        // Clear user data from storage
-        chrome.storage.local.remove(['user'], () => {
+        // Send logout message to background script first
+        chrome.runtime.sendMessage({ action: 'userLoggedOut' })
+          .catch(error => {
+            console.log("Could not send logout message to background", error);
+          });
+        
+        // Clear ALL user data from storage
+        chrome.storage.local.remove(['user', 'stats', 'pendingSync', 'pendingSyncResolved'], () => {
+          console.log('User data cleared from Chrome storage on logout');
           showAuthScreen();
         });
       })
@@ -288,177 +292,191 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 2000);
   });
   
-  // Track a new application
-  async function trackApplication() {
-    const trackButton = document.getElementById('track-application-btn');
-    const deleteButton = document.getElementById('delete-application-btn');
-    
-    // Add loading state
-    trackButton.classList.add('btn-loading');
-    trackButton.disabled = true;
-    
-    try {
-      // Get current stats
-      const stats = await getUserStats();
-      
-      // Get the current page URL from the active tab
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      const url = tab.url;
-      const title = tab.title || 'Job Application';
-      
-      // Check if this URL is already tracked as the lastTracked
-      const lastTrackedJob = stats.appliedJobs.find(job => job.lastTracked === true);
-      if (lastTrackedJob && lastTrackedJob.url === url) {
-        // This URL is already tracked
-        trackButton.classList.remove('btn-loading');
-        trackButton.classList.add('btn-warning');
-        trackButton.querySelector('.btn-text').textContent = 'Already tracked';
-        
-        // Reset button after delay
+  // Clear storage button
+  const clearStorageBtn = document.getElementById('clear-storage-btn');
+  if (clearStorageBtn) {
+    clearStorageBtn.addEventListener('click', async () => {
+      if (confirm('Are you sure you want to clear all storage data? This will log you out and reset all local data.')) {
+        await clearAllChromeStorage();
+        // Force logout and refresh the popup
         setTimeout(() => {
-          trackButton.classList.remove('btn-warning');
-          trackButton.disabled = true;
-          trackButton.querySelector('.btn-text').textContent = 'Track Application';
-          
-          // Make sure delete button is enabled
-          deleteButton.disabled = false;
-        }, 1500);
-        
+          location.reload();
+        }, 1000);
+      }
+    });
+  }
+  
+  // Track a new job application
+  async function trackApplication() {
+    try {
+      // Get current tab information
+      const tabs = await new Promise((resolve) => {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          resolve(tabs);
+        });
+      });
+      
+      const currentTab = tabs[0];
+      const url = currentTab.url;
+      const title = currentTab.title;
+      
+      // Get current stats
+      const result = await new Promise((resolve) => {
+        chrome.storage.local.get(['user', 'stats'], (result) => {
+          resolve(result);
+        });
+      });
+      
+      if (!result.user) {
+        showError('You must be logged in to track applications');
         return;
       }
       
-      // Update stats
-      stats.todayCount += 1;
-      const today = new Date().toISOString().split('T')[0];
+      const userId = result.user.uid;
+      let stats = result.stats || { userId: userId, appliedJobs: [], todayCount: 0, streak: 0, lastUpdated: '' };
       
-      // Add the application with special flag indicating it's the latest tracked URL
-      // Clear any previous lastTracked flags first
-      stats.appliedJobs.forEach(job => job.lastTracked = false);
+      // Ensure stats has userId
+      stats.userId = userId;
       
-      stats.appliedJobs.push({
-        url: url,
-        title: title,
-        date: today,
-        timestamp: new Date().toISOString(),
-        lastTracked: true  // Flag to identify the last tracked URL
-      });
+      // Check if URL is already tracked
+      const isAlreadyTracked = stats.appliedJobs.some(job => job.url === url);
       
-      // Check if streak should be updated (if today's count just reached 20)
-      if (stats.todayCount === 20) {
-        stats.streak += 1;
+      if (isAlreadyTracked) {
+        showError('This application is already tracked');
+        return;
       }
       
-      // Save stats
-      await updateStats(stats);
+      // Create new job entry
+      const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+      const newJob = {
+        url,
+        title,
+        date: today,
+        favicon: `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}`,
+        lastTracked: true
+      };
       
-      // Show feedback
-      trackButton.classList.add('btn-success');
-      trackButton.querySelector('.btn-text').textContent = 'Added!';
+      // Clear previous lastTracked flags
+      stats.appliedJobs.forEach(job => {
+        job.lastTracked = false;
+      });
+      
+      // Add new job to the beginning of the array
+      stats.appliedJobs.unshift(newJob);
+      
+      // Update counters
+      if (stats.lastUpdated === today) {
+        stats.todayCount++;
+      } else {
+        // Check if streak should continue or reset
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
+        
+        if (stats.lastUpdated === yesterdayStr) {
+          // Continued streak
+          stats.streak++;
+        } else if (stats.lastUpdated && stats.lastUpdated !== today) {
+          // Broken streak - but start a new one
+          stats.streak = 1;
+        } else {
+          // First time tracking or same day
+          stats.streak = 1;
+        }
+        
+        stats.todayCount = 1;
+        stats.lastUpdated = today;
+      }
+      
+      // Update stats in storage and Firestore
+      await updateStats(stats);
       
       // Update UI
       updateCounters(stats);
       updateRecentApplications(stats.appliedJobs);
       createApplicationChart(stats.appliedJobs);
       
-      // Sync with Firebase
-      syncWithFirebase();
+      // Update button state
+      const buttonState = await initializeButtonState();
+      document.getElementById('track-application-btn').disabled = buttonState.trackButtonDisabled;
+      document.getElementById('delete-application-btn').disabled = buttonState.deleteButtonDisabled;
       
-      // Enable the delete button and disable the track button
-      deleteButton.disabled = false;
-      
-      // Reset button after delay
-      setTimeout(() => {
-        trackButton.classList.remove('btn-loading', 'btn-success');
-        trackButton.disabled = true; // Keep disabled until remove is clicked
-        trackButton.querySelector('.btn-text').textContent = 'Track Application';
-      }, 1500);
+      // Show success message
+      //showSuccess('Application tracked successfully!');
       
     } catch (error) {
-      console.error("Error tracking application:", error);
-      trackButton.classList.remove('btn-loading');
-      trackButton.classList.add('btn-error');
-      
-      setTimeout(() => {
-        trackButton.classList.remove('btn-error');
-        trackButton.disabled = false;
-      }, 1500);
-      
-      showError("Failed to track application");
+      console.error('Error tracking application:', error);
+      showError('Failed to track application');
     }
   }
   
-  // Remove an application
+  // Remove the last tracked job application
   async function removeApplication() {
-    const deleteButton = document.getElementById('delete-application-btn');
-    const trackButton = document.getElementById('track-application-btn');
-    
-    // Add loading state
-    deleteButton.classList.add('btn-loading');
-    deleteButton.disabled = true;
-    
     try {
       // Get current stats
-      const stats = await getUserStats();
+      const result = await new Promise((resolve) => {
+        chrome.storage.local.get(['user', 'stats'], (result) => {
+          resolve(result);
+        });
+      });
       
-      // Get the current page URL 
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      const currentUrl = tab.url;
-      
-      // Find the last tracked URL that matches current URL
-      const lastTrackedIndex = stats.appliedJobs.findIndex(job => 
-        job.lastTracked === true && job.url === currentUrl
-      );
-      
-      if (lastTrackedIndex !== -1 && stats.todayCount > 0) {
-        // Decrement counter
-        stats.todayCount -= 1;
-        
-        // Remove the job
-        stats.appliedJobs.splice(lastTrackedIndex, 1);
-        
-        // Save stats
-        await updateStats(stats);
-        
-        // Show feedback
-        deleteButton.classList.add('btn-success');
-        deleteButton.querySelector('.btn-text').textContent = 'Removed!';
-        
-        // Update UI
-        updateCounters(stats);
-        updateRecentApplications(stats.appliedJobs);
-        createApplicationChart(stats.appliedJobs);
-        
-        // Sync with Firebase
-        syncWithFirebase();
-      } else {
-        deleteButton.classList.add('btn-warning');
-        deleteButton.querySelector('.btn-text').textContent = 'Not tracked here';
+      if (!result.user) {
+        showError('You must be logged in to remove applications');
+        return;
       }
       
-      // Reset button after delay
-      setTimeout(() => {
-        deleteButton.classList.remove('btn-loading', 'btn-success', 'btn-warning');
-        deleteButton.disabled = true; // Keep disabled until track is clicked
-        deleteButton.querySelector('.btn-text').textContent = 'Remove Application';
-        
-        // Enable track button
-        trackButton.disabled = false;
-      }, 1500);
+      if (!result.stats || !result.stats.appliedJobs || result.stats.appliedJobs.length === 0) {
+        showError('No applications to remove');
+        return;
+      }
+      
+      const userId = result.user.uid;
+      const stats = { ...result.stats, userId };
+      
+      // Find the last tracked job
+      const lastTrackedIndex = stats.appliedJobs.findIndex(job => job.lastTracked === true);
+      
+      if (lastTrackedIndex === -1) {
+        showError('No tracked application found to remove');
+        return;
+      }
+      
+      // Get the job to be removed
+      const removedJob = stats.appliedJobs[lastTrackedIndex];
+      
+      // Check if the job was tracked today
+      const today = new Date().toISOString().split('T')[0];
+      if (removedJob.date === today && stats.todayCount > 0) {
+        stats.todayCount--;
+      }
+      
+      // Remove the job
+      stats.appliedJobs.splice(lastTrackedIndex, 1);
+      
+      // Set the new last tracked job if there are any left
+      if (stats.appliedJobs.length > 0) {
+        stats.appliedJobs[0].lastTracked = true;
+      }
+      
+      // Update stats in storage and Firestore
+      await updateStats(stats);
+      
+      // Update UI
+      updateCounters(stats);
+      updateRecentApplications(stats.appliedJobs);
+      createApplicationChart(stats.appliedJobs);
+      
+      // Update button state
+      const buttonState = await initializeButtonState();
+      document.getElementById('track-application-btn').disabled = buttonState.trackButtonDisabled;
+      document.getElementById('delete-application-btn').disabled = buttonState.deleteButtonDisabled;
+      
+      // Show success message
+      //showSuccess('Application removed successfully!');
       
     } catch (error) {
-      console.error("Error removing application:", error);
-      deleteButton.classList.remove('btn-loading');
-      deleteButton.classList.add('btn-error');
-      
-      setTimeout(() => {
-        deleteButton.classList.remove('btn-error');
-        deleteButton.disabled = true;
-        
-        // Enable track button
-        trackButton.disabled = false;
-      }, 1500);
-      
-      showError("Failed to remove application");
+      console.error('Error removing application:', error);
+      showError('Failed to remove application');
     }
   }
   
@@ -477,35 +495,108 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   
-  // Sync stats with Firebase
-  function syncWithFirebase() {
+  // Sync stats with Firestore
+  function syncWithFirestore() {
+    console.log('Syncing stats with Firestore');
     chrome.runtime.sendMessage({ action: 'syncStats' })
       .catch(error => {
         console.log("Could not send sync message:", error);
       });
   }
   
-  // Get user stats
+  // Get user stats from Firestore
   async function getUserStats() {
     return new Promise((resolve) => {
-      chrome.storage.local.get(['stats'], (result) => {
-        const defaultStats = {
-          todayCount: 0,
-          streak: 0,
-          lastUpdated: new Date().toISOString().split('T')[0],
-          appliedJobs: []
-        };
+      chrome.storage.local.get(['user'], async (result) => {
+        if (!result.user) {
+          console.log('No user found in storage');
+          resolve(null);
+          return;
+        }
         
-        resolve(result.stats || defaultStats);
+        const userId = result.user.uid;
+        
+        try {
+          // Send message to background script to get stats from Firestore
+          chrome.runtime.sendMessage({ 
+            action: 'getStats', 
+            userId: userId 
+          }, (response) => {
+            if (response && response.success && response.stats) {
+              // Store stats in Chrome storage with userId to verify ownership
+              const statsWithUserId = {
+                ...response.stats,
+                userId: userId // Add userId to stats for ownership verification
+              };
+              
+              chrome.storage.local.set({ stats: statsWithUserId });
+              resolve(statsWithUserId);
+            } else {
+              console.log('No stats found in Firestore, creating default stats');
+              // Initialize with empty stats
+              const defaultStats = {
+                userId: userId, // Add userId to stats for ownership verification
+                todayCount: 0,
+                streak: 0,
+                lastUpdated: new Date().toISOString().split('T')[0],
+                appliedJobs: []
+              };
+              
+              // Save default stats to Firestore via background script
+              chrome.runtime.sendMessage({ 
+                action: 'updateStats', 
+                userId: userId,
+                stats: defaultStats
+              });
+              
+              // Store in Chrome storage
+              chrome.storage.local.set({ stats: defaultStats });
+              resolve(defaultStats);
+            }
+          });
+        } catch (error) {
+          console.error('Error getting user stats:', error);
+          resolve(null);
+        }
       });
     });
   }
   
-  // Update stats
+  // Update stats in Chrome storage and Firestore
   async function updateStats(stats) {
     return new Promise((resolve) => {
-      chrome.storage.local.set({ stats }, () => {
-        resolve();
+      chrome.storage.local.get(['user'], (result) => {
+        if (!result.user) {
+          console.log('No user found, stats not updated');
+          resolve(false);
+          return;
+        }
+        
+        const userId = result.user.uid;
+        
+        // Ensure stats has userId for verification
+        const statsWithUserId = {
+          ...stats,
+          userId: userId
+        };
+        
+        // Update in Chrome storage
+        chrome.storage.local.set({ stats: statsWithUserId }, () => {
+          // Send to background script to update in Firestore
+          chrome.runtime.sendMessage({
+            action: 'updateStats',
+            userId: userId,
+            stats: statsWithUserId
+          }, (response) => {
+            if (response && response.success) {
+              console.log('Stats updated in Firestore');
+              resolve(true);
+            } else {
+              console.error('Failed to update stats in Firestore');
+              resolve(false);
+            }
+          });
+        });
       });
     });
   }
@@ -521,8 +612,28 @@ document.addEventListener('DOMContentLoaded', () => {
         auth.onAuthStateChanged((firebaseUser) => {
           if (!firebaseUser) {
             // Firebase says user is not logged in, remove from storage and show auth
-            chrome.storage.local.remove(['user'], () => {
+            chrome.storage.local.remove(['user', 'stats', 'pendingSync', 'pendingSyncResolved'], () => {
+              console.log('Clearing all user data - Firebase auth validation failed');
               showAuthScreen();
+            });
+          } else if (firebaseUser.uid !== result.user.uid) {
+            // Different user logged in with Firebase than what's in storage
+            // This can happen when switching accounts without proper logout
+            console.log('User mismatch detected. Clearing old data and updating storage.');
+            
+            // Update storage with fresh Firebase data
+            const userData = {
+              uid: firebaseUser.uid,
+              displayName: firebaseUser.displayName || 'User',
+              email: firebaseUser.email || '',
+              photoURL: firebaseUser.photoURL || ''
+            };
+            
+            // Clear old data first, then set new user data
+            chrome.storage.local.remove(['stats', 'pendingSync', 'pendingSyncResolved'], () => {
+              chrome.storage.local.set({ user: userData }, () => {
+                showDashboard(userData);
+              });
             });
           } else {
             // Update storage with fresh Firebase data
@@ -546,12 +657,18 @@ document.addEventListener('DOMContentLoaded', () => {
               email: firebaseUser.email || '',
               photoURL: firebaseUser.photoURL || ''
             };
-            chrome.storage.local.set({ user: userData }, () => {
-              showDashboard(userData);
+            
+            // Clear any potential stale data first
+            chrome.storage.local.remove(['stats', 'pendingSync', 'pendingSyncResolved'], () => {
+              chrome.storage.local.set({ user: userData }, () => {
+                showDashboard(userData);
+              });
             });
           } else {
-            // No user in Firebase either, show auth screen
-            showAuthScreen();
+            // No user in Firebase either, show auth screen and ensure storage is clean
+            chrome.storage.local.remove(['user', 'stats', 'pendingSync', 'pendingSyncResolved'], () => {
+              showAuthScreen();
+            });
           }
         });
       }
@@ -571,9 +688,11 @@ document.addEventListener('DOMContentLoaded', () => {
         photoURL: user.photoURL || ''
       };
       
-      // Store user info in Chrome storage for persistence
-      chrome.storage.local.set({ user: userData }, () => {
-        showDashboard(userData);
+      // Clear any potential stale data first, then store user info in Chrome storage for persistence
+      chrome.storage.local.remove(['stats', 'pendingSync', 'pendingSyncResolved'], () => {
+        chrome.storage.local.set({ user: userData }, () => {
+          showDashboard(userData);
+        });
       });
     } else {
       // No user signed in with Firebase, check storage as fallback
@@ -582,12 +701,34 @@ document.addEventListener('DOMContentLoaded', () => {
           // User in storage but not in Firebase, verify with onAuthStateChanged
           auth.onAuthStateChanged((firebaseUser) => {
             if (firebaseUser) {
-              showDashboard(result.user);
+              // Ensure the user in storage matches the Firebase user
+              if (firebaseUser.uid !== result.user.uid) {
+                // User mismatch, update storage with current Firebase user
+                const newUserData = {
+                  uid: firebaseUser.uid,
+                  displayName: firebaseUser.displayName || 'User',
+                  email: firebaseUser.email || '',
+                  photoURL: firebaseUser.photoURL || ''
+                };
+                
+                // Clear old data first, then set new user data
+                chrome.storage.local.remove(['stats', 'pendingSync', 'pendingSyncResolved'], () => {
+                  chrome.storage.local.set({ user: newUserData }, () => {
+                    showDashboard(newUserData);
+                  });
+                });
+              } else {
+                showDashboard(result.user);
+              }
             } else {
-              showAuthScreen();
+              // No user in Firebase, clear all storage data
+              chrome.storage.local.remove(['user', 'stats', 'pendingSync', 'pendingSyncResolved'], () => {
+                showAuthScreen();
+              });
             }
           });
         } else {
+          // No user in storage or Firebase, show auth screen
           showAuthScreen();
         }
       });
@@ -669,89 +810,111 @@ document.addEventListener('DOMContentLoaded', () => {
     signupForm.classList.remove('active');
   }
   
-  // Load user stats
+  // Load user stats from Chrome storage or Firebase
   function loadUserStats() {
-    chrome.storage.local.get(['stats'], (result) => {
-      if (result.stats) {
-        const stats = result.stats;
+    chrome.storage.local.get(['user', 'stats'], (result) => {
+      if (result.user) {
+        // First try to get stats from Chrome storage
+        if (result.stats) {
+          // Verify stats belong to the current user
+          if (result.stats.userId === result.user.uid) {
+            // We have stats for the current user
+            updateCounters(result.stats);
+            updateRecentApplications(result.stats.appliedJobs || []);
+            createApplicationChart(result.stats.appliedJobs || []);
+            
+            // No need to sync here - avoid duplicate save
+          } else {
+            console.log('Stats in storage belong to a different user, fetching from Firestore');
+            // Stats belong to a different user, clear them and fetch from Firestore
+            chrome.storage.local.remove(['stats'], () => {
+              getUserStats().then(stats => {
+                if (stats) {
+                  updateCounters(stats);
+                  updateRecentApplications(stats.appliedJobs || []);
+                  createApplicationChart(stats.appliedJobs || []);
+                }
+              });
+            });
+          }
+        } else {
+          // No stats in storage, fetch from Firestore
+          getUserStats().then(stats => {
+            if (stats) {
+              updateCounters(stats);
+              updateRecentApplications(stats.appliedJobs || []);
+              createApplicationChart(stats.appliedJobs || []);
+            }
+          });
+        }
         
-        // Update counts
-        updateCounters(stats);
-        
-        // Update recent applications list
-        updateRecentApplications(stats.appliedJobs || []);
-        
-        // Create or update chart
-        createApplicationChart(stats.appliedJobs || []);
-      } else {
-        // Initialize with empty stats
-        const defaultStats = {
-          todayCount: 0,
-          streak: 0,
-          lastUpdated: new Date().toISOString().split('T')[0],
-          appliedJobs: []
-        };
-        
-        chrome.storage.local.set({ stats: defaultStats });
-        
-        updateCounters(defaultStats);
-        
-        // Create empty chart
-        createApplicationChart([]);
+        // Load friends data
+        loadFriends(result.user.uid);
       }
     });
   }
   
   // Update recent applications list
   function updateRecentApplications(appliedJobs) {
+    // Ensure appliedJobs is an array
+    if (!Array.isArray(appliedJobs) || appliedJobs.length === 0) {
+      recentApplicationsList.innerHTML = '<div class="empty-state">No applications tracked yet.</div>';
+      return;
+    }
+    
     // Sort by date descending
-    const sortedJobs = [...appliedJobs].sort((a, b) => 
-      new Date(b.timestamp) - new Date(a.timestamp)
-    );
+    const sortedJobs = [...appliedJobs].sort((a, b) => {
+      // Handle missing timestamp - fallback to date if timestamp is missing
+      const timeA = a.timestamp ? new Date(a.timestamp) : new Date(a.date);
+      const timeB = b.timestamp ? new Date(b.timestamp) : new Date(b.date);
+      return timeB - timeA;
+    });
     
     // Take only the 5 most recent
     const recentJobs = sortedJobs.slice(0, 3);
     
-    if (recentJobs.length > 0) {
-      recentApplicationsList.innerHTML = '';
-      
-      recentJobs.forEach(job => {
-        const jobDate = new Date(job.timestamp);
-        const formattedDate = jobDate.toLocaleDateString('en-US', { 
-          month: 'short', 
-          day: 'numeric' 
-        });
-        
-        const jobElement = document.createElement('div');
-        jobElement.className = 'application-item';
-        
-        // Don't show URL for manual entries
-        const urlDisplay = job.url === 'manual-entry' 
-          ? 'Manual entry' 
-          : job.url;
-        
-        jobElement.innerHTML = `
-          <div class="application-title">${job.title || 'Job Application'}</div>
-          <div class="application-url">${urlDisplay}</div>
-          <div class="application-date">${formattedDate}</div>
-        `;
-        
-        // Add click event to open the URL (except for manual entries)
-        if (job.url !== 'manual-entry') {
-          jobElement.addEventListener('click', () => {
-            chrome.tabs.create({ url: job.url });
-          });
-        }
-        
-        recentApplicationsList.appendChild(jobElement);
+    recentApplicationsList.innerHTML = '';
+    
+    recentJobs.forEach(job => {
+      // Use timestamp if available, otherwise use date
+      const jobDate = job.timestamp ? new Date(job.timestamp) : new Date(job.date);
+      const formattedDate = jobDate.toLocaleDateString('en-US', { 
+        month: 'short', 
+        day: 'numeric' 
       });
-    } else {
-      recentApplicationsList.innerHTML = '<div class="empty-state">No applications tracked yet.</div>';
-    }
+      
+      const jobElement = document.createElement('div');
+      jobElement.className = 'application-item';
+      
+      // Don't show URL for manual entries
+      const urlDisplay = !job.url || job.url === 'manual-entry' 
+        ? 'Manual entry' 
+        : job.url;
+      
+      jobElement.innerHTML = `
+        <div class="application-title">${job.title || 'Job Application'}</div>
+        <div class="application-url">${urlDisplay}</div>
+        <div class="application-date">${formattedDate}</div>
+      `;
+      
+      // Add click event to open the URL (except for manual entries)
+      if (job.url && job.url !== 'manual-entry') {
+        jobElement.addEventListener('click', () => {
+          chrome.tabs.create({ url: job.url });
+        });
+      }
+      
+      recentApplicationsList.appendChild(jobElement);
+    });
   }
   
   // Create applications chart
   function createApplicationChart(appliedJobs) {
+    // Ensure appliedJobs is an array
+    if (!Array.isArray(appliedJobs)) {
+      appliedJobs = [];
+    }
+    
     // Get applications per day for the last 7 days
     const today = new Date();
     const days = [];
@@ -918,19 +1081,25 @@ document.addEventListener('DOMContentLoaded', () => {
       }, 300);
     }, 3000);
   }
+  
+  // Clear all Chrome storage data
+  function clearAllChromeStorage() {
+    return new Promise((resolve) => {
+      chrome.storage.local.clear(() => {
+        console.log('All Chrome storage data cleared');
+        showSuccess('Storage cleared. Please refresh the extension.');
+        resolve(true);
+      });
+    });
+  }
 
   // Listen for messages from background script
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'triggerFirebaseSync' && request.userId) {
-      console.log('Received request to sync with Firebase for user:', request.userId);
-      // Check if syncUserData function exists
-      if (typeof syncUserData === 'function') {
-        syncUserData(request.userId);
-        sendResponse({ status: 'success' });
-      } else {
-        console.error('syncUserData function not found');
-        sendResponse({ status: 'error', message: 'syncUserData function not found' });
-      }
+      console.log('Received request to sync with Firestore for user:', request.userId);
+      // Use our syncWithFirestore function
+      syncWithFirestore();
+      sendResponse({ status: 'success' });
     }
     return true; // Keep the message channel open for async responses
   });

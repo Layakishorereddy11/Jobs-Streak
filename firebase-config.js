@@ -2,7 +2,6 @@
 const firebaseConfig = {
   apiKey: "AIzaSyAEJrsFagxQs8KmaG47fKKzcC_81LAJ4R8",
   authDomain: "jobs-streak.firebaseapp.com",
-  databaseURL: "https://jobs-streak-default-rtdb.firebaseio.com",
   projectId: "jobs-streak",
   storageBucket: "jobs-streak.firebasestorage.app",
   messagingSenderId: "848377435066",

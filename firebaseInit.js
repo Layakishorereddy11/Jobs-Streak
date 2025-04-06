@@ -2,7 +2,6 @@
 const firebaseConfig = {
   apiKey: "AIzaSyAEJrsFagxQs8KmaG47fKKzcC_81LAJ4R8",
   authDomain: "jobs-streak.firebaseapp.com",
-  databaseURL: "https://jobs-streak-default-rtdb.firebaseio.com",
   projectId: "jobs-streak",
   storageBucket: "jobs-streak.firebasestorage.app",
   messagingSenderId: "848377435066",
@@ -34,39 +33,11 @@ db.settings({
 // Define global connection state variable
 let isConnected = false;
 
-// Monitor Firestore connection status
-function monitorFirestoreConnection() {
-  try {
-    // Try to use the Firebase Database connection monitor
-    const connRef = firebase.database().ref('.info/connected');
-    connRef.on('value', (snap) => {
-      isConnected = snap.val() === true;
-      console.log('Firebase connection status:', isConnected);
-      
-      // When we reconnect, sync any changes that happened while offline
-      if (isConnected) {
-        const user = auth.currentUser;
-        if (user) {
-          chrome.storage.local.get(['stats'], (result) => {
-            if (result.stats) {
-              syncUserData(user.uid);
-            }
-          });
-        }
-      }
-    });
-  } catch (e) {
-    console.log('Could not monitor connection status, using fallback:', e);
-    // Use navigator.onLine as a fallback with periodic checking
-    checkConnectionWithFallback();
-  }
-}
-
-// Fallback connection checker that doesn't rely on Firebase Realtime Database
-function checkConnectionWithFallback() {
+// Monitor connection status using navigator.onLine
+function monitorConnection() {
   // Start with online status from navigator
   isConnected = navigator.onLine;
-  console.log('Initial connection status (fallback):', isConnected);
+  console.log('Initial connection status:', isConnected ? 'online' : 'offline');
   
   // Listen for online/offline events
   window.addEventListener('online', () => {
@@ -89,7 +60,7 @@ function checkConnectionWithFallback() {
     isConnected = false;
   });
   
-  // Also periodically try to ping Firestore to verify connection
+  // Periodically ping Firestore to verify connection
   setInterval(() => {
     // Simple timestamp ping to check Firestore availability
     if (navigator.onLine) {
@@ -121,112 +92,36 @@ function checkConnectionWithFallback() {
   }, 60000); // Check every minute
 }
 
-// Try to initialize connection monitoring
-monitorFirestoreConnection();
+// Initialize connection monitoring
+monitorConnection();
 
-// Sync data between Chrome storage and Firebase
+// Function to pull data from Firestore to Chrome storage
 function syncUserData(userId) {
-  console.log('Syncing data for user:', userId);
-  // Get local data
-  chrome.storage.local.get(['stats'], (result) => {
-    const localStats = result.stats;
-    
-    if (!localStats) {
-      console.log('No local stats found, skipping sync');
-      return;
+  console.log('Pulling data from Firestore for user:', userId);
+  
+  // Send message to background script to get data from Firestore
+  chrome.runtime.sendMessage({ 
+    action: 'getStats', 
+    userId: userId 
+  })
+  .then(response => {
+    if (response && response.success && response.stats) {
+      console.log('Successfully fetched stats from Firestore');
+    } else {
+      console.log('No stats found in Firestore or error occurred');
     }
+  })
+  .catch(error => {
+    console.error('Error getting stats from Firestore:', error);
     
-    console.log('Local stats found, syncing with Firestore');
-    
-    // Get Firestore data
-    db.collection('users').doc(userId).get()
-      .then((doc) => {
-        if (doc.exists) {
-          console.log('User document exists in Firestore');
-          const firestoreStats = doc.data().stats;
-          
-          // Determine which stats to use
-          let finalStats = localStats;
-          
-          if (firestoreStats) {
-            // If remote data is more recent, use it
-            const localDate = new Date(localStats.lastUpdated);
-            const firestoreDate = new Date(firestoreStats.lastUpdated);
-            
-            if (firestoreDate > localDate) {
-              console.log('Using Firestore data (more recent)');
-              finalStats = firestoreStats;
-            } else {
-              // Merge applied jobs from both sources
-              console.log('Merging local and Firestore data');
-              const localJobUrls = new Set(localStats.appliedJobs.map(job => job.url));
-              const newJobs = firestoreStats.appliedJobs.filter(job => !localJobUrls.has(job.url));
-              
-              finalStats.appliedJobs = [...localStats.appliedJobs, ...newJobs];
-            }
-          }
-          
-          // Update both storages
-          chrome.storage.local.set({ stats: finalStats });
-          
-          // Always try to update Firestore, regardless of connection state
-          console.log('Updating existing Firestore document');
-          db.collection('users').doc(userId).update({ stats: finalStats })
-            .then(() => {
-              console.log('Successfully updated Firestore');
-            })
-            .catch(error => {
-              console.error("Error updating Firestore:", error);
-              
-              // Store that we need to sync later
-              chrome.storage.local.set({ 
-                pendingSync: { 
-                  userId, 
-                  timestamp: Date.now() 
-                }
-              });
-            });
-        } else {
-          console.log('User document does not exist, creating new one');
-          // Create user document if it doesn't exist
-          const userData = {
-            stats: localStats,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-            displayName: auth.currentUser ? auth.currentUser.displayName || '' : '',
-            email: auth.currentUser ? auth.currentUser.email || '' : '',
-            photoURL: auth.currentUser ? auth.currentUser.photoURL || '' : ''
-          };
-          
-          // Always try to create Firestore document, regardless of connection state
-          console.log('Creating new Firestore document');
-          db.collection('users').doc(userId).set(userData)
-            .then(() => {
-              console.log('Successfully created new document in Firestore');
-            })
-            .catch(error => {
-              console.error("Error creating user document:", error);
-              
-              // Store that we need to sync later
-              chrome.storage.local.set({ 
-                pendingSync: { 
-                  userId, 
-                  timestamp: Date.now() 
-                }
-              });
-            });
-        }
-      })
-      .catch((error) => {
-        console.error("Error syncing with Firestore:", error);
-        
-        // Store that we need to sync later
-        chrome.storage.local.set({ 
-          pendingSync: { 
-            userId, 
-            timestamp: Date.now() 
-          }
-        });
-      });
+    // Store that we need to sync later
+    chrome.storage.local.set({ 
+      pendingSync: { 
+        userId, 
+        timestamp: Date.now(),
+        pullOnly: true  // Flag to indicate we only want to pull data
+      }
+    });
   });
 }
 
@@ -243,8 +138,14 @@ auth.onAuthStateChanged((user) => {
     
     // Store user info in Chrome storage for persistent login across popup sessions
     chrome.storage.local.set({ user: userData }, () => {
-      // Sync data with Firebase
-      syncUserData(user.uid);
+      // Instead of syncing data TO Firestore, request stats FROM Firestore
+      console.log('User logged in, fetching stats from Firestore');
+      chrome.runtime.sendMessage({ 
+        action: 'getStats', 
+        userId: user.uid 
+      }).catch(error => {
+        console.log("Could not send getStats message to background", error);
+      });
     });
     
     // Notify background script about login
@@ -253,8 +154,10 @@ auth.onAuthStateChanged((user) => {
         console.log("Could not send login message to background", error);
       });
   } else {
-    // User is signed out
-    chrome.storage.local.remove(['user']);
+    // User is signed out - clear ALL user data from storage
+    chrome.storage.local.remove(['user', 'stats', 'pendingSync', 'pendingSyncResolved'], () => {
+      console.log('User data cleared from Chrome storage on logout');
+    });
     
     // Notify all tabs that user is logged out
     chrome.runtime.sendMessage({ action: 'userLoggedOut' })
