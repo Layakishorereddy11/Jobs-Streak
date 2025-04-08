@@ -17,26 +17,17 @@ const firebaseConfig = {
   measurementId: "G-87ZXGEFB07"
 };
 
-// Initialize Firebase when service worker starts
+// Global variables for Firebase
 let firebaseInitialized = false;
 let firestoreDB = null;
 
+// Initialize Firebase
 function initializeFirebaseIfNeeded() {
   if (!firebaseInitialized) {
     try {
-      // Check if Firebase app already exists
-      try {
-        firebase.app();
-      } catch (e) {
-        // Initialize if it doesn't exist
-        firebase.initializeApp(firebaseConfig);
-      }
-      
-      // Initialize Firestore
+      try { firebase.app(); } catch (e) { firebase.initializeApp(firebaseConfig); }
       firestoreDB = firebase.firestore();
-      
       firebaseInitialized = true;
-      console.log('Firebase initialized in background script');
       return true;
     } catch (err) {
       console.error('Failed to initialize Firebase:', err);
@@ -46,21 +37,19 @@ function initializeFirebaseIfNeeded() {
   return true;
 }
 
-// Initialize Firebase on service worker startup
+// Initialize on startup
 initializeFirebaseIfNeeded();
 
-// Function to retry pending syncs
+// Process any pending sync operations
 const retryPendingSync = () => {
   chrome.storage.local.get(['pendingSync'], (result) => {
-    if (result.pendingSync && result.pendingSync.userId && (result.pendingSync.stats || result.pendingSync.timestamp)) {
+    if (result.pendingSync?.userId) {
       console.log('Found pending sync, retrying...');
       const userId = result.pendingSync.userId;
       
-      // If we have the stats directly in pendingSync, use them
       if (result.pendingSync.stats) {
         syncWithFirestore(userId, result.pendingSync.stats);
       } else {
-        // Otherwise get the current stats
         chrome.storage.local.get(['stats'], (statsResult) => {
           if (statsResult.stats) {
             syncWithFirestore(userId, statsResult.stats);
@@ -71,27 +60,19 @@ const retryPendingSync = () => {
   });
 };
 
-// Set up a periodic check for pending syncs
-chrome.alarms.create('syncRetry', { periodInMinutes: 5 }); // Check every 5 minutes
+// Set up periodic sync checks
+chrome.alarms.create('syncRetry', { periodInMinutes: 5 });
 
-// Listen for installation
+// Listen for installation and startup events
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
-    // Open onboarding page
-    chrome.tabs.create({
-      url: chrome.runtime.getURL('onboarding.html')
-    });
+    chrome.tabs.create({ url: chrome.runtime.getURL('onboarding.html') });
   }
-  
-  // Check for pending syncs on startup
   retryPendingSync();
 });
 
-// Also check for pending syncs when the service worker starts
-retryPendingSync();
-
-// Function to check if day has changed and update streak accordingly
-const checkDayChange = async () => {
+// Check for day change and update streak
+const checkDayChange = () => {
   chrome.storage.local.get(['stats', 'user'], (result) => {
     if (!result.stats || !result.user) return;
     
@@ -100,7 +81,7 @@ const checkDayChange = async () => {
     const lastUpdated = stats.lastUpdated;
     
     if (today !== lastUpdated) {
-      // If more than one day has passed and yesterday's count was less than 20, reset streak
+      // Update streak logic
       const lastDate = new Date(lastUpdated);
       const todayDate = new Date(today);
       const diffTime = Math.abs(todayDate - lastDate);
@@ -108,10 +89,7 @@ const checkDayChange = async () => {
       
       if (diffDays > 1 || stats.todayCount < 20) {
         stats.streak = 0;
-      }
-      
-      // If user completed yesterday's goal, increment streak
-      if (stats.todayCount >= 20 && diffDays === 1) {
+      } else if (stats.todayCount >= 20 && diffDays === 1) {
         stats.streak += 1;
       }
       
@@ -119,7 +97,7 @@ const checkDayChange = async () => {
       stats.todayCount = 0;
       stats.lastUpdated = today;
       
-      // Update storage
+      // Update storage and Firestore
       chrome.storage.local.set({ stats }, () => {
         syncWithFirestore(result.user.uid, stats);
       });
@@ -127,366 +105,208 @@ const checkDayChange = async () => {
   });
 };
 
-// Function to sync data with Firestore
+// Function to sync stats with Firestore
 const syncWithFirestore = (userId, stats) => {
-  console.log('Background script syncing immediately for user:', userId);
-  
-  // Make sure Firebase is initialized
   if (!initializeFirebaseIfNeeded()) {
-    console.error('Failed to initialize Firebase, storing pending sync');
-    chrome.storage.local.set({
-      pendingSync: {
-        userId,
-        timestamp: Date.now(),
-        stats: stats
-      }
-    });
+    console.error('Firestore DB not initialized');
+    storePendingSync(userId, stats);
     return;
   }
   
-  // Validate stats object
   if (!stats || typeof stats !== 'object') {
     console.error('Invalid stats object:', stats);
     return;
   }
   
-  // Ensure stats has userId
-  if (!stats.userId) {
-    stats.userId = userId;
-  }
-  
-  // Ensure stats has appliedJobs array
-  if (!Array.isArray(stats.appliedJobs)) {
-    stats.appliedJobs = [];
-  }
-  
-  // Clean stats object for Firestore - avoid nested structure
-  const cleanedStats = {
-    userId: stats.userId,
-    streak: stats.streak || 0,
-    todayCount: stats.todayCount || 0,
+  // Create standardized Firestore document structure
+  const firestoreData = {
     lastUpdated: stats.lastUpdated || new Date().toISOString().split('T')[0],
-    appliedJobs: stats.appliedJobs.map(job => ({
-      url: job.url || '',
-      title: job.title || '',
-      date: job.date || new Date().toISOString().split('T')[0],
-      lastTracked: Boolean(job.lastTracked),
-      timestamp: job.timestamp || new Date().toISOString(),
-      favicon: job.favicon || ''
-    })),
+    stats: {
+      streak: stats.streak || 0,
+      todayCount: stats.todayCount || 0,
+      appliedJobs: Array.isArray(stats.appliedJobs) ? stats.appliedJobs.map(job => ({
+        company: job.company || extractCompanyFromUrl(job.url),
+        date: job.date || new Date().toISOString().split('T')[0],
+        lastTracked: Boolean(job.lastTracked),
+        timestamp: job.timestamp || firebase.firestore.Timestamp.now(),
+        title: job.title || '',
+        url: job.url || ''
+      })) : []
+    },
+    userId: userId,
     _timestamp: firebase.firestore.FieldValue.serverTimestamp()
   };
   
-  // Update Firestore
+  // Update or create Firestore document
   try {
-    console.log('Updating Firestore document with cleaned data');
-    
-    // Check if document exists
     firestoreDB.collection('users').doc(userId).get()
       .then((doc) => {
         if (doc.exists) {
-          // Update existing document
-          return firestoreDB.collection('users').doc(userId).update(cleanedStats);
+          return firestoreDB.collection('users').doc(userId).update(firestoreData);
         } else {
-          // Create new document with user info
           return firestoreDB.collection('users').doc(userId).set({
-            ...cleanedStats,
+            ...firestoreData,
             createdAt: firebase.firestore.FieldValue.serverTimestamp()
           });
         }
       })
       .then(() => {
-        console.log('Firestore DB updated successfully.');
-        // Clear any pending sync after success
-        chrome.storage.local.set({
-          pendingSyncResolved: true
-        });
+        chrome.storage.local.set({ pendingSyncResolved: true });
       })
       .catch((err) => {
         console.error('Error updating Firestore DB:', err);
-        // Store for retry
-        chrome.storage.local.set({
-          pendingSync: {
-            userId,
-            timestamp: Date.now(),
-            stats: stats
-          }
-        });
+        storePendingSync(userId, stats);
       });
   } catch (error) {
     console.error('Failed to access Firestore DB:', error);
-    // Save pending sync
-    chrome.storage.local.set({
-      pendingSync: {
-        userId,
-        timestamp: Date.now(),
-        stats: stats
-      }
-    });
+    storePendingSync(userId, stats);
   }
   
-  // Update local chrome storage with cleaned structure
-  chrome.storage.local.set({ stats: cleanedStats });
+  // Update local storage
+  chrome.storage.local.set({ stats });
   
-  // Send message to all tabs so that content UIs refresh immediately
+  // Notify all tabs - send both refresh and updateButtonStates messages
   chrome.tabs.query({}, (tabs) => {
     tabs.forEach((tab) => {
-      chrome.tabs.sendMessage(tab.id, { action: 'refreshStats' })
-        .catch(() => {}); // Ignore errors for tabs missing our content script
+      // Send refreshStats message for overall UI update
+      chrome.tabs.sendMessage(tab.id, { action: 'refreshStats' }).catch(() => {
+        console.log('Failed to send refreshStats to tab:', tab.id);
+      });
+      
+      // Send statsUpdated message specifically for button states
+      chrome.tabs.sendMessage(tab.id, { action: 'statsUpdated' }).catch(() => {
+        console.log('Failed to send statsUpdated to tab:', tab.id);
+      });
     });
   });
 };
 
-// Schedule daily check
-chrome.alarms.create('dailyCheck', { periodInMinutes: 60 }); // Check every hour
+// Store a pending sync operation
+const storePendingSync = (userId, stats) => {
+  chrome.storage.local.set({
+    pendingSync: {
+      userId,
+      timestamp: Date.now(),
+      stats: stats
+    }
+  });
+};
 
-// Listen for scheduled checks
+// Extract company name from URL
+const extractCompanyFromUrl = (url) => {
+  try {
+    const hostname = new URL(url).hostname.replace('www.', '');
+    const domain = hostname.split('.')[0];
+    return domain.charAt(0).toUpperCase() + domain.slice(1);
+  } catch (e) {
+    return '';
+  }
+};
+
+// Schedule daily check
+chrome.alarms.create('dailyCheck', { periodInMinutes: 60 });
+
+// Listen for scheduled alarms
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'dailyCheck') {
-    checkDayChange();
-  }
-  
-  if (alarm.name === 'syncRetry') {
-    retryPendingSync();
-  }
+  if (alarm.name === 'dailyCheck') checkDayChange();
+  if (alarm.name === 'syncRetry') retryPendingSync();
 });
 
-// Listen for messages from content script or popup
+// Message handler for all extension communication
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  // Sync user stats with Firestore
   if (request.action === 'syncStats') {
-    console.log('Received syncStats message');
     chrome.storage.local.get(['user', 'stats'], (result) => {
       if (result.user && result.stats) {
-        console.log('Found user and stats, syncing with Firestore');
-        
-        // Make sure Firebase is initialized before syncing
         if (initializeFirebaseIfNeeded()) {
-          // Call the sync function
           syncWithFirestore(result.user.uid, result.stats);
           sendResponse({ status: 'success' });
         } else {
-          console.error('Failed to initialize Firebase for sync');
           sendResponse({ status: 'error', message: 'Failed to initialize Firebase' });
         }
       } else {
-        console.error('Missing user or stats, cannot sync with Firestore');
         sendResponse({ status: 'error', message: 'Missing user or stats' });
       }
     });
-    return true; // Keep the message channel open for async responses
+    return true;
   }
   
+  // User logged in - update all tabs
   if (request.action === 'userLoggedIn') {
-    // Update all tabs with new user data
     chrome.tabs.query({}, (tabs) => {
       tabs.forEach((tab) => {
-        chrome.tabs.sendMessage(tab.id, { action: 'refreshStats' })
-          .catch(() => {}); // Ignore errors for tabs that don't have our content script
+        chrome.tabs.sendMessage(tab.id, { action: 'refreshStats' }).catch(() => {});
       });
     });
     sendResponse({ status: 'success' });
-    return true; // Keep the message channel open for async responses
+    return true;
   }
   
+  // User logged out - clear data and update tabs
   if (request.action === 'userLoggedOut') {
-    // Reset Firebase initialization state
     firebaseInitialized = false;
     firestoreDB = null;
     
-    // Clear any stored data
     chrome.storage.local.remove(['stats', 'pendingSync', 'pendingSyncResolved'], () => {
       console.log('Background: User data cleared on logout');
     });
     
-    // Update all tabs to reflect logged out state
     chrome.tabs.query({}, (tabs) => {
       tabs.forEach((tab) => {
-        chrome.tabs.sendMessage(tab.id, { action: 'userLoggedOut' })
-          .catch(() => {}); // Ignore errors for tabs that don't have our content script
+        chrome.tabs.sendMessage(tab.id, { action: 'userLoggedOut' }).catch(() => {});
       });
     });
     
     sendResponse({ status: 'success' });
-    return true; // Keep the message channel open for async responses
+    return true;
   }
   
+  // Get user stats from Firestore
   if (request.action === 'getStats') {
     if (!request.userId) {
       sendResponse({ success: false, message: 'No userId provided' });
       return true;
     }
     
-    if (!firestoreDB) {
-      initializeFirebaseIfNeeded().then(() => {
-        // Get stats from Firestore
-        firestoreDB.collection('users').doc(request.userId).get()
-          .then((doc) => {
-            if (doc.exists) {
-              const docData = doc.data();
-              
-              // Prepare default stats
-              const defaultStats = {
-                userId: request.userId,
-                todayCount: 0,
-                streak: 0,
-                lastUpdated: new Date().toISOString().split('T')[0],
-                appliedJobs: []
-              };
-              
-              // Handle flattened structure (new format)
-              if (Array.isArray(docData.appliedJobs)) {
-                // This is the new flattened structure
-                const validStats = {
-                  userId: docData.userId || request.userId,
-                  todayCount: typeof docData.todayCount === 'number' ? docData.todayCount : 0,
-                  streak: typeof docData.streak === 'number' ? docData.streak : 0,
-                  lastUpdated: docData.lastUpdated || new Date().toISOString().split('T')[0],
-                  appliedJobs: Array.isArray(docData.appliedJobs) ? docData.appliedJobs : []
-                };
-                
-                sendResponse({ success: true, stats: validStats });
-              }
-              // Handle nested structure (old format)
-              else if (docData.stats && typeof docData.stats === 'object') {
-                // Using old nested structure, extract and convert
-                const stats = docData.stats;
-                
-                // Create flattened structure 
-                const flattenedStats = {
-                  userId: stats.userId || request.userId,
-                  todayCount: typeof stats.todayCount === 'number' ? stats.todayCount : 0,
-                  streak: typeof stats.streak === 'number' ? stats.streak : 0,
-                  lastUpdated: stats.lastUpdated || new Date().toISOString().split('T')[0],
-                  appliedJobs: Array.isArray(stats.appliedJobs) ? stats.appliedJobs : []
-                };
-                
-                // Update the document to use the new structure
-                firestoreDB.collection('users').doc(request.userId).update(flattenedStats)
-                  .catch(error => {
-                    console.error('Error updating document to new structure:', error);
-                  });
-                
-                sendResponse({ success: true, stats: flattenedStats });
-              } 
-              // Handle malformed document
-              else {
-                console.log('Document exists but has invalid structure, using default stats');
-                // Store default stats to Firestore
-                firestoreDB.collection('users').doc(request.userId).update(defaultStats)
-                  .catch(error => {
-                    console.error('Error creating default stats in Firestore:', error);
-                  });
-                
-                sendResponse({ success: true, stats: defaultStats });
-              }
-            } else {
-              // Create default stats for new user
-              const defaultStats = {
-                userId: request.userId,
-                todayCount: 0,
-                streak: 0,
-                lastUpdated: new Date().toISOString().split('T')[0],
-                appliedJobs: [],
-                _timestamp: firebase.firestore.FieldValue.serverTimestamp()
-              };
-              
-              // Create a new document
-              firestoreDB.collection('users').doc(request.userId).set({
-                ...defaultStats,
-                createdAt: firebase.firestore.FieldValue.serverTimestamp()
-              }).catch(error => {
-                console.error('Error creating new document:', error);
-              });
-              
-              sendResponse({ success: true, stats: defaultStats });
-            }
-          })
-          .catch((error) => {
-            console.error('Error getting stats from Firestore:', error);
-            sendResponse({ success: false, message: error.message });
-          });
-      });
-    } else {
-      // Same logic as above but without the initialization promise
+    const fetchStats = () => {
       firestoreDB.collection('users').doc(request.userId).get()
         .then((doc) => {
+          const defaultStats = createDefaultStats(request.userId);
+          
           if (doc.exists) {
             const docData = doc.data();
             
-            // Prepare default stats
-            const defaultStats = {
-              userId: request.userId,
-              todayCount: 0,
-              streak: 0,
-              lastUpdated: new Date().toISOString().split('T')[0],
-              appliedJobs: []
-            };
-            
-            // Handle flattened structure (new format)
-            if (Array.isArray(docData.appliedJobs)) {
-              // This is the new flattened structure
+            // Handle the new structure (stats contains appliedJobs)
+            if (docData.stats?.appliedJobs) {
               const validStats = {
-                userId: docData.userId || request.userId,
-                todayCount: typeof docData.todayCount === 'number' ? docData.todayCount : 0,
-                streak: typeof docData.streak === 'number' ? docData.streak : 0,
+                userId: request.userId,
+                todayCount: docData.stats.todayCount || 0,
+                streak: docData.stats.streak || 0,
                 lastUpdated: docData.lastUpdated || new Date().toISOString().split('T')[0],
-                appliedJobs: Array.isArray(docData.appliedJobs) ? docData.appliedJobs : []
+                appliedJobs: docData.stats.appliedJobs || []
               };
-              
               sendResponse({ success: true, stats: validStats });
             }
-            // Handle nested structure (old format)
-            else if (docData.stats && typeof docData.stats === 'object') {
-              // Using old nested structure, extract and convert
-              const stats = docData.stats;
+            // Handle legacy structure and migrate
+            else if (Array.isArray(docData.appliedJobs)) {
+              migrateToNewStructure(request.userId, docData);
               
-              // Create flattened structure 
-              const flattenedStats = {
-                userId: stats.userId || request.userId,
-                todayCount: typeof stats.todayCount === 'number' ? stats.todayCount : 0,
-                streak: typeof stats.streak === 'number' ? stats.streak : 0,
-                lastUpdated: stats.lastUpdated || new Date().toISOString().split('T')[0],
-                appliedJobs: Array.isArray(stats.appliedJobs) ? stats.appliedJobs : []
+              const validStats = {
+                userId: request.userId,
+                todayCount: docData.todayCount || 0,
+                streak: docData.streak || 0,
+                lastUpdated: docData.lastUpdated || new Date().toISOString().split('T')[0],
+                appliedJobs: docData.appliedJobs || []
               };
-              
-              // Update the document to use the new structure
-              firestoreDB.collection('users').doc(request.userId).update(flattenedStats)
-                .catch(error => {
-                  console.error('Error updating document to new structure:', error);
-                });
-              
-              sendResponse({ success: true, stats: flattenedStats });
-            } 
-            // Handle malformed document
+              sendResponse({ success: true, stats: validStats });
+            }
+            // Handle invalid structure
             else {
-              console.log('Document exists but has invalid structure, using default stats');
-              // Store default stats to Firestore
-              firestoreDB.collection('users').doc(request.userId).update(defaultStats)
-                .catch(error => {
-                  console.error('Error creating default stats in Firestore:', error);
-                });
-              
+              createNewUserDocument(request.userId);
               sendResponse({ success: true, stats: defaultStats });
             }
           } else {
-            // Create default stats for new user
-            const defaultStats = {
-              userId: request.userId,
-              todayCount: 0,
-              streak: 0,
-              lastUpdated: new Date().toISOString().split('T')[0],
-              appliedJobs: [],
-              _timestamp: firebase.firestore.FieldValue.serverTimestamp()
-            };
-            
-            // Create a new document
-            firestoreDB.collection('users').doc(request.userId).set({
-              ...defaultStats,
-              createdAt: firebase.firestore.FieldValue.serverTimestamp()
-            }).catch(error => {
-              console.error('Error creating new document:', error);
-            });
-            
+            createNewUserDocument(request.userId);
             sendResponse({ success: true, stats: defaultStats });
           }
         })
@@ -494,58 +314,52 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           console.error('Error getting stats from Firestore:', error);
           sendResponse({ success: false, message: error.message });
         });
+    };
+    
+    if (!firestoreDB) {
+      initializeFirebaseIfNeeded().then(fetchStats);
+    } else {
+      fetchStats();
     }
     
-    return true; // Keep the message channel open for async response
+    return true;
   }
   
+  // Update stats in Firestore
   if (request.action === 'updateStats') {
     if (!request.userId || !request.stats) {
       sendResponse({ success: false, message: 'Missing userId or stats' });
       return true;
     }
     
-    // Validate stats object
     if (!request.stats || typeof request.stats !== 'object') {
       sendResponse({ success: false, message: 'Invalid stats object' });
       return true;
     }
     
-    // Ensure required stats fields
     const stats = request.stats;
     
-    // Clean the stats object to use flattened structure
-    const cleanedStats = {
-      userId: stats.userId || request.userId,
-      todayCount: typeof stats.todayCount === 'number' ? stats.todayCount : 0,
-      streak: typeof stats.streak === 'number' ? stats.streak : 0,
+    // Format for Firestore
+    const firestoreData = {
       lastUpdated: stats.lastUpdated || new Date().toISOString().split('T')[0],
-      appliedJobs: Array.isArray(stats.appliedJobs) ? stats.appliedJobs.map(job => ({
-        url: job.url || '',
-        title: job.title || '',
-        date: job.date || new Date().toISOString().split('T')[0],
-        lastTracked: Boolean(job.lastTracked),
-        timestamp: job.timestamp || new Date().toISOString(),
-        favicon: job.favicon || ''
-      })) : [],
+      stats: {
+        streak: stats.streak || 0,
+        todayCount: stats.todayCount || 0,
+        appliedJobs: Array.isArray(stats.appliedJobs) ? stats.appliedJobs.map(job => ({
+          company: job.company || extractCompanyFromUrl(job.url),
+          date: job.date || new Date().toISOString().split('T')[0],
+          lastTracked: Boolean(job.lastTracked),
+          timestamp: job.timestamp || firebase.firestore.Timestamp.now(),
+          title: job.title || '',
+          url: job.url || ''
+        })) : []
+      },
+      userId: request.userId,
       _timestamp: firebase.firestore.FieldValue.serverTimestamp()
     };
     
-    if (!firestoreDB) {
-      initializeFirebaseIfNeeded().then(() => {
-        // Update stats in Firestore
-        firestoreDB.collection('users').doc(request.userId).set(cleanedStats, { merge: true })
-          .then(() => {
-            sendResponse({ success: true });
-          })
-          .catch((error) => {
-            console.error('Error updating stats in Firestore:', error);
-            sendResponse({ success: false, message: error.message });
-          });
-      });
-    } else {
-      // Update stats in Firestore
-      firestoreDB.collection('users').doc(request.userId).set(cleanedStats, { merge: true })
+    const updateFirestore = () => {
+      firestoreDB.collection('users').doc(request.userId).set(firestoreData, { merge: true })
         .then(() => {
           sendResponse({ success: true });
         })
@@ -553,10 +367,62 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           console.error('Error updating stats in Firestore:', error);
           sendResponse({ success: false, message: error.message });
         });
+    };
+    
+    if (!firestoreDB) {
+      initializeFirebaseIfNeeded().then(updateFirestore);
+    } else {
+      updateFirestore();
     }
     
-    return true; // Keep the message channel open for async response
+    return true;
   }
   
-  return true; // Keep the message channel open for async responses
+  return true;
 });
+
+// Helper functions
+function createDefaultStats(userId) {
+  return {
+    userId: userId,
+    todayCount: 0,
+    streak: 0,
+    lastUpdated: new Date().toISOString().split('T')[0],
+    appliedJobs: []
+  };
+}
+
+function createNewUserDocument(userId) {
+  const newStructure = {
+    lastUpdated: new Date().toISOString().split('T')[0],
+    stats: {
+      streak: 0,
+      todayCount: 0,
+      appliedJobs: []
+    },
+    userId: userId,
+    _timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  };
+  
+  firestoreDB.collection('users').doc(userId).set(newStructure)
+    .catch(error => {
+      console.error('Error creating new document:', error);
+    });
+}
+
+function migrateToNewStructure(userId, docData) {
+  const newStructure = {
+    lastUpdated: docData.lastUpdated || new Date().toISOString().split('T')[0],
+    stats: {
+      streak: docData.streak || 0,
+      todayCount: docData.todayCount || 0,
+      appliedJobs: docData.appliedJobs || []
+    }
+  };
+  
+  firestoreDB.collection('users').doc(userId).update(newStructure)
+    .catch(error => {
+      console.error('Error updating document to new structure:', error);
+    });
+}

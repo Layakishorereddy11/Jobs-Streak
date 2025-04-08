@@ -302,14 +302,55 @@ input, button {
 }
 
 /* Chart */
-.chart-container {
-  margin: 16px;
-  background: white;
-  border-radius: 12px;
-  padding: 16px;
-  height: 200px;
-  box-shadow: var(--card-shadow);
-  border: 1px solid var(--border-color);
+#chart-container {
+  position: relative;
+  background-color: #fff;
+  border-radius: 8px;
+  padding: 15px;
+  margin: 15px 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+#chart-container h3 {
+  font-size: 14px;
+  margin: 0 0 10px 0;
+  color: #444;
+  text-align: center;
+}
+
+#applications-chart {
+  height: 200px !important;
+  width: 100% !important;
+}
+
+.chart-range-selector {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 15px;
+}
+
+.range-btn {
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background-color: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  color: #555;
+  transition: all 0.2s ease;
+}
+
+.range-btn:hover {
+  background-color: #e0e0e0;
+}
+
+.range-btn.active {
+  background-color: #0070f3;
+  color: white;
+  border-color: #0060d3;
+  box-shadow: 0 2px 4px rgba(0, 112, 243, 0.2);
 }
 
 /* Section titles */
@@ -673,7 +714,7 @@ input, button {
 
 /* Counter animations */
 .counter-updated {
-  animation: pulse 0.5s ease;
+  animation: pulse 0.5s ease-out;
 }
 
 @keyframes pulse {

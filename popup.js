@@ -333,7 +333,13 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       
       const userId = result.user.uid;
-      let stats = result.stats || { userId: userId, appliedJobs: [], todayCount: 0, streak: 0, lastUpdated: '' };
+      let stats = result.stats || { 
+        userId: userId, 
+        appliedJobs: [], 
+        todayCount: 0, 
+        streak: 0, 
+        lastUpdated: new Date().toISOString().split('T')[0] 
+      };
       
       // Ensure stats has userId
       stats.userId = userId;
@@ -346,20 +352,23 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
       
+      // Extract company name from URL
+      const hostname = new URL(url).hostname.replace('www.', '');
+      const companyName = hostname.split('.')[0].charAt(0).toUpperCase() + hostname.split('.')[0].slice(1);
+      
       // Create new job entry
       const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
       const newJob = {
         url,
         title,
         date: today,
-        favicon: `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}`,
-        lastTracked: true
+        company: companyName,
+        lastTracked: true,
+        timestamp: new Date().toISOString()
       };
       
       // Clear previous lastTracked flags
-      stats.appliedJobs.forEach(job => {
-        job.lastTracked = false;
-      });
+      stats.appliedJobs.forEach(job => job.lastTracked = false);
       
       // Add new job to the beginning of the array
       stats.appliedJobs.unshift(newJob);
@@ -401,8 +410,14 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('track-application-btn').disabled = buttonState.trackButtonDisabled;
       document.getElementById('delete-application-btn').disabled = buttonState.deleteButtonDisabled;
       
-      // Show success message
-      //showSuccess('Application tracked successfully!');
+      // Notify content script to update button states
+      chrome.tabs.query({}, (tabs) => {
+        tabs.forEach((tab) => {
+          chrome.tabs.sendMessage(tab.id, { action: 'statsUpdated' }).catch(() => {
+            console.log('Failed to send update to tab:', tab.id);
+          });
+        });
+      });
       
     } catch (error) {
       console.error('Error tracking application:', error);
@@ -471,8 +486,14 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('track-application-btn').disabled = buttonState.trackButtonDisabled;
       document.getElementById('delete-application-btn').disabled = buttonState.deleteButtonDisabled;
       
-      // Show success message
-      //showSuccess('Application removed successfully!');
+      // Notify content script to update button states
+      chrome.tabs.query({}, (tabs) => {
+        tabs.forEach((tab) => {
+          chrome.tabs.sendMessage(tab.id, { action: 'statsUpdated' }).catch(() => {
+            console.log('Failed to send update to tab:', tab.id);
+          });
+        });
+      });
       
     } catch (error) {
       console.error('Error removing application:', error);
@@ -524,6 +545,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }, (response) => {
             if (response && response.success && response.stats) {
               // Store stats in Chrome storage with userId to verify ownership
+              console.log('Stats received from Firestore:', response);
               const statsWithUserId = {
                 ...response.stats,
                 userId: userId // Add userId to stats for ownership verification
@@ -590,6 +612,14 @@ document.addEventListener('DOMContentLoaded', () => {
           }, (response) => {
             if (response && response.success) {
               console.log('Stats updated in Firestore');
+              
+              // Notify content scripts that stats have been updated
+              chrome.tabs.query({}, (tabs) => {
+                tabs.forEach((tab) => {
+                  chrome.tabs.sendMessage(tab.id, { action: 'statsUpdated' }).catch(() => {});
+                });
+              });
+              
               resolve(true);
             } else {
               console.error('Failed to update stats in Firestore');
@@ -915,71 +945,142 @@ document.addEventListener('DOMContentLoaded', () => {
       appliedJobs = [];
     }
     
-    // Get applications per day for the last 7 days
+    // Create chart container if it doesn't exist
+    const chartContainer = document.getElementById('chart-container');
+    if (!chartContainer.querySelector('.chart-range-selector')) {
+      const rangeSelector = document.createElement('div');
+      rangeSelector.className = 'chart-range-selector';
+      rangeSelector.innerHTML = `
+        <button data-days="7" class="range-btn active">7 Days</button>
+        <button data-days="15" class="range-btn">15 Days</button>
+        <button data-days="30" class="range-btn">30 Days</button>
+      `;
+      chartContainer.insertBefore(rangeSelector, document.getElementById('applications-chart'));
+      
+      // Add event listeners to range buttons
+      const rangeButtons = rangeSelector.querySelectorAll('.range-btn');
+      rangeButtons.forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const days = parseInt(e.target.dataset.days);
+          rangeButtons.forEach(b => b.classList.remove('active'));
+          e.target.classList.add('active');
+          updateChartRange(appliedJobs, days);
+        });
+      });
+    }
+    
+    // Initial chart creation with 7 days
+    updateChartRange(appliedJobs, 7);
+  }
+  
+  // Update chart with specified range
+  function updateChartRange(appliedJobs, daysToShow) {
+    // Get applications per day for the specified range
     const today = new Date();
     const days = [];
     const counts = [];
     
-    // Generate last 7 days
-    for (let i = 6; i >= 0; i--) {
+    // Generate days for the chart
+    for (let i = daysToShow - 1; i >= 0; i--) {
       const date = new Date(today);
       date.setDate(date.getDate() - i);
       const formattedDate = date.toISOString().split('T')[0];
       
-      days.push(date.toLocaleDateString('en-US', { weekday: 'short' }));
+      // Format label based on range
+      let dayLabel;
+      if (daysToShow <= 7) {
+        // For 7 days, show short weekday names
+        dayLabel = date.toLocaleDateString('en-US', { weekday: 'short' });
+      } else if (daysToShow <= 15) {
+        // For 15 days, show day/month
+        dayLabel = date.toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
+      } else {
+        // For 30 days, show day/month more compactly
+        dayLabel = date.toLocaleDateString('en-US', { day: 'numeric', month: 'numeric' });
+      }
+      
+      days.push(dayLabel);
       
       // Count applications for this day
       const count = appliedJobs.filter(job => job.date === formattedDate).length;
       counts.push(count);
     }
     
-    // Create or update chart
     const ctx = document.getElementById('applications-chart').getContext('2d');
     
+    // Chart configuration
+    const chartConfig = {
+      type: 'bar',
+      data: {
+        labels: days,
+        datasets: [{
+          label: 'Applications',
+          data: counts,
+          backgroundColor: 'rgba(0, 112, 243, 0.7)',
+          borderColor: 'rgba(0, 112, 243, 1)',
+          borderWidth: 1,
+          borderRadius: 4,
+          maxBarThickness: daysToShow > 15 ? 20 : 40
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            display: false
+          },
+          tooltip: {
+            mode: 'index',
+            intersect: false,
+            callbacks: {
+              title: function(tooltipItems) {
+                // Show full date in tooltip
+                const index = tooltipItems[0].dataIndex;
+                const date = new Date(today);
+                date.setDate(date.getDate() - (daysToShow - 1 - index));
+                return date.toLocaleDateString('en-US', { 
+                  weekday: 'long', 
+                  year: 'numeric', 
+                  month: 'short', 
+                  day: 'numeric' 
+                });
+              }
+            }
+          }
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: {
+              precision: 0
+            }
+          },
+          x: {
+            ticks: {
+              maxRotation: daysToShow > 15 ? 45 : 0,
+              font: {
+                size: daysToShow > 15 ? 9 : 11
+              }
+            }
+          }
+        },
+        animation: {
+          duration: 500
+        }
+      }
+    };
+    
+    // Create or update chart
     if (window.applicationsChart) {
       window.applicationsChart.data.labels = days;
       window.applicationsChart.data.datasets[0].data = counts;
+      window.applicationsChart.data.datasets[0].maxBarThickness = daysToShow > 15 ? 20 : 40;
+      window.applicationsChart.options.scales.x.ticks.maxRotation = daysToShow > 15 ? 45 : 0;
+      window.applicationsChart.options.scales.x.ticks.font.size = daysToShow > 15 ? 9 : 11;
       window.applicationsChart.update();
     } else {
-      window.applicationsChart = new Chart(ctx, {
-        type: 'bar',
-        data: {
-          labels: days,
-          datasets: [{
-            label: 'Applications',
-            data: counts,
-            backgroundColor: 'rgba(0, 112, 243, 0.7)',
-            borderColor: 'rgba(0, 112, 243, 1)',
-            borderWidth: 1,
-            borderRadius: 4,
-            maxBarThickness: 40
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: {
-              display: false
-            },
-            tooltip: {
-              mode: 'index',
-              intersect: false
-            }
-          },
-          scales: {
-            y: {
-              beginAtZero: true,
-              ticks: {
-                precision: 0
-              }
-            }
-          },
-          animation: {
-            duration: 500
-          }
-        }
-      });
+      window.applicationsChart = new Chart(ctx, chartConfig);
     }
   }
   

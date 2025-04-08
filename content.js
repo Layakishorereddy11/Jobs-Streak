@@ -2,7 +2,7 @@
 const checkAuthentication = async () => {
   return new Promise((resolve) => {
     chrome.storage.local.get(['user'], (result) => {
-      resolve(result.user ? true : false);
+      resolve(!!result.user);
     });
   });
 };
@@ -11,19 +11,18 @@ const checkAuthentication = async () => {
 const getUserStats = async () => {
   return new Promise((resolve) => {
     chrome.storage.local.get(['user', 'stats'], (result) => {
-      // First check if we have a user
       if (!result.user) {
         console.log('No user found in getUserStats');
         resolve(null);
         return;
       }
       
-      // Create userId for verification
+      // Get userId for verification
       const userId = result.user.uid;
       
       // Default stats with user ID 
       const defaultStats = {
-        userId: userId,
+        userId,
         todayCount: 0,
         streak: 0,
         lastUpdated: new Date().toISOString().split('T')[0],
@@ -32,12 +31,10 @@ const getUserStats = async () => {
       
       // Verify and clean stats if they exist
       if (result.stats) {
-        // Add userId if missing
         if (!result.stats.userId) {
           result.stats.userId = userId;
         }
         
-        // Ensure appliedJobs is an array
         if (!Array.isArray(result.stats.appliedJobs)) {
           result.stats.appliedJobs = [];
         }
@@ -69,21 +66,19 @@ const updateStats = async (stats) => {
 // Function to check and reset daily count if day changed
 const checkAndResetDailyCount = async (stats) => {
   const today = new Date().toISOString().split('T')[0];
-  const lastUpdated = stats.lastUpdated;
+  const lastUpdated = stats.lastUpdated || today;
   
   if (today !== lastUpdated) {
-    // If more than one day has passed and yesterday's count was less than 20, reset streak
     const lastDate = new Date(lastUpdated);
     const todayDate = new Date(today);
     const diffTime = Math.abs(todayDate - lastDate);
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
     
+    // Reset streak if more than one day passed or didn't meet goal
     if (diffDays > 1 || stats.todayCount < 20) {
       stats.streak = 0;
-    }
-    
-    // If user completed yesterday's goal, increment streak
-    if (stats.todayCount >= 20 && diffDays === 1) {
+    } else if (stats.todayCount >= 20 && diffDays === 1) {
+      // Increment streak if goal was met yesterday
       stats.streak += 1;
     }
     
@@ -104,7 +99,7 @@ const createJobTrackingUI = async () => {
       existingContainer.remove();
     }
     
-    // Check if the user is authenticated
+    // Check if user is authenticated
     const isAuthenticated = await checkAuthentication();
     if (!isAuthenticated) {
       return;
@@ -129,10 +124,8 @@ const createJobTrackingUI = async () => {
     stats = await checkAndResetDailyCount(stats);
     await updateStats(stats);
     
-    // Get current URL
+    // Get current URL and check if it's already tracked
     const currentUrl = window.location.href;
-    
-    // Check if any URL was last tracked (for button state)
     const lastTrackedJob = stats.appliedJobs.find(job => job && job.lastTracked === true);
     const isCurrentUrlTracked = lastTrackedJob && lastTrackedJob.url === currentUrl;
     
@@ -180,36 +173,30 @@ const createJobTrackingUI = async () => {
       container.style.display = 'none';
     });
     
+    // Track job button event listener
     document.getElementById('track-job').addEventListener('click', async () => {
-      // Store references to buttons
       const trackButton = document.getElementById('track-job');
       const removeButton = document.getElementById('remove-job');
       
-      // Check if buttons still exist
       if (!trackButton || !removeButton) return;
       
-      // Show loading state
       trackButton.classList.add('loading');
       trackButton.disabled = true;
       
       try {
-        // Get the current URL
         const jobUrl = window.location.href;
         
-        // Check if this URL is already tracked
+        // Check if already tracked
         const lastTrackedJob = stats.appliedJobs.find(job => job.lastTracked === true);
         if (lastTrackedJob && lastTrackedJob.url === jobUrl) {
-          // This URL is already tracked
           trackButton.classList.remove('loading');
           trackButton.classList.add('warning');
           
-          // Use safer way to update text content
-          const buttonTextSpan = trackButton.querySelector('.btn-text') || trackButton;
+          const buttonTextSpan = trackButton.querySelector('.button-icon') ? 
+            trackButton : trackButton.querySelector('.btn-text');
           if (buttonTextSpan) buttonTextSpan.textContent = 'Already tracked';
           
-          // Reset button after delay
           setTimeout(() => {
-            // Check if element still exists
             const refreshedTrackButton = document.getElementById('track-job');
             const refreshedRemoveButton = document.getElementById('remove-job');
             if (!refreshedTrackButton || !refreshedRemoveButton) return;
@@ -217,8 +204,6 @@ const createJobTrackingUI = async () => {
             refreshedTrackButton.classList.remove('warning');
             refreshedTrackButton.disabled = true;
             refreshedTrackButton.innerHTML = '<span class="button-icon">+</span> Track Application';
-            
-            // Make sure remove button is enabled
             refreshedRemoveButton.disabled = false;
           }, 2000);
           
@@ -228,24 +213,31 @@ const createJobTrackingUI = async () => {
         // Increment count
         stats.todayCount += 1;
         
-        // Save URL and info
+        // Get today's date
         const today = new Date().toISOString().split('T')[0];
         
         // Clear any previous lastTracked flags
         stats.appliedJobs.forEach(job => job.lastTracked = false);
         
-        stats.appliedJobs.push({
+        // Extract company name from URL
+        const url = new URL(jobUrl);
+        const hostname = url.hostname.replace('www.', '');
+        const companyName = hostname.split('.')[0].charAt(0).toUpperCase() + hostname.split('.')[0].slice(1);
+        
+        // Add new job application
+        stats.appliedJobs.unshift({
           url: jobUrl,
           title: document.title,
           date: today,
+          company: companyName,
           timestamp: new Date().toISOString(),
-          lastTracked: true // Flag to identify the last tracked URL
+          lastTracked: true
         });
         
         // Update stats
         await updateStats(stats);
         
-        // Update UI - safely with null checks
+        // Update UI counters
         const todayCountElement = document.querySelector('.stat-box:first-child .stat-count');
         if (todayCountElement) todayCountElement.textContent = stats.todayCount;
         
@@ -256,36 +248,30 @@ const createJobTrackingUI = async () => {
           if (streakCountElement) streakCountElement.textContent = stats.streak;
         }
         
-        // Check if trackButton still exists before using it
+        // Update button state
         if (trackButton && document.body.contains(trackButton)) {
-          // Show success state
           trackButton.classList.remove('loading');
           trackButton.classList.add('success');
           
-          // Use safer way to update text
-          const buttonTextSpan = trackButton.querySelector('.btn-text') || trackButton;
+          const buttonTextSpan = trackButton.querySelector('.button-icon') ? 
+            trackButton : trackButton.querySelector('.btn-text');
           if (buttonTextSpan) buttonTextSpan.textContent = 'Added!';
         }
         
-        // Check if removeButton still exists
+        // Update remove button state
         if (removeButton && document.body.contains(removeButton)) {
-          // Enable remove button and keep track button disabled
           removeButton.disabled = false;
         }
         
-        // Sync with Firestore via background script
-        const syncSuccess = await syncWithFirestore();
-        if (!syncSuccess) {
-          console.log('Firestore sync failed, data will sync later');
-        }
+        // Sync with Firestore
+        await syncWithFirestore();
         
-        // Reset button after delay with null checks
+        // Reset button after delay
         setTimeout(() => {
-          // Get fresh references in case DOM has changed
           const refreshedTrackButton = document.getElementById('track-job');
           if (refreshedTrackButton) {
             refreshedTrackButton.classList.remove('success');
-            refreshedTrackButton.disabled = true; // Keep disabled until remove is clicked
+            refreshedTrackButton.disabled = true;
             refreshedTrackButton.innerHTML = '<span class="button-icon">+</span> Track Application';
           }
         }, 2000);
@@ -293,13 +279,11 @@ const createJobTrackingUI = async () => {
       } catch (error) {
         console.error("Error tracking application:", error);
         
-        // Null check before using trackButton
         if (trackButton && document.body.contains(trackButton)) {
           trackButton.classList.remove('loading');
           trackButton.classList.add('error');
           
           setTimeout(() => {
-            // Get fresh reference in case DOM has changed
             const refreshedTrackButton = document.getElementById('track-job');
             if (refreshedTrackButton) {
               refreshedTrackButton.classList.remove('error');
@@ -311,23 +295,20 @@ const createJobTrackingUI = async () => {
       }
     });
     
+    // Remove job button event listener
     document.getElementById('remove-job').addEventListener('click', async () => {
-      // Store references to buttons
       const removeButton = document.getElementById('remove-job');
       const trackButton = document.getElementById('track-job');
       
-      // Check if buttons still exist
       if (!removeButton || !trackButton) return;
       
-      // Show loading state
       removeButton.classList.add('loading');
       removeButton.disabled = true;
       
       try {
-        // Get current URL
         const currentUrl = window.location.href;
         
-        // Find the last tracked job for this URL
+        // Find the job to remove
         const lastTrackedIndex = stats.appliedJobs.findIndex(job => 
           job.lastTracked === true && job.url === currentUrl
         );
@@ -342,279 +323,78 @@ const createJobTrackingUI = async () => {
           // Update stats
           await updateStats(stats);
           
-          // Update UI - safely with null checks
+          // Update UI
           const todayCountElement = document.querySelector('.stat-box:first-child .stat-count');
           if (todayCountElement) todayCountElement.textContent = stats.todayCount;
           
-          // Null check before using removeButton
+          // Update button states
           if (removeButton && document.body.contains(removeButton)) {
-            // Show success state
             removeButton.classList.remove('loading');
             removeButton.classList.add('success');
             
-            // Use safer way to update text
-            const buttonTextSpan = removeButton.querySelector('.btn-text') || removeButton;
+            const buttonTextSpan = removeButton.querySelector('.button-icon') ? 
+              removeButton : removeButton.querySelector('.btn-text');
             if (buttonTextSpan) buttonTextSpan.textContent = 'Removed!';
           }
           
-          // Null check before using trackButton
           if (trackButton && document.body.contains(trackButton)) {
-            // Enable track button
             trackButton.disabled = false;
           }
           
-          // Sync with Firestore via background script
-          const syncSuccess = await syncWithFirestore();
-          if (!syncSuccess) {
-            console.log('Firestore sync failed, data will sync later');
-          }
+          // Sync with Firestore
+          await syncWithFirestore();
         } else {
-          // Only proceed if elements still exist
           if (removeButton && document.body.contains(removeButton)) {
-            // No applications to remove for this URL
             removeButton.classList.remove('loading');
             removeButton.classList.add('warning');
             
-            // Use safer way to update text
-            const buttonTextSpan = removeButton.querySelector('.btn-text') || removeButton;
-            if (buttonTextSpan) buttonTextSpan.textContent = 'Nothing to remove';
-          }
-          
-          // Null check before using trackButton
-          if (trackButton && document.body.contains(trackButton)) {
-            // Enable track button since there's nothing to remove
-            trackButton.disabled = false;
+            const buttonTextSpan = removeButton.querySelector('.button-icon') ? 
+              removeButton : removeButton.querySelector('.btn-text');
+            if (buttonTextSpan) buttonTextSpan.textContent = 'No job to remove';
           }
         }
         
-        // Reset button after delay with null checks
+        // Reset button after delay
         setTimeout(() => {
-          // Get fresh references in case DOM has changed
           const refreshedRemoveButton = document.getElementById('remove-job');
-          const refreshedTrackButton = document.getElementById('track-job');
-          
           if (refreshedRemoveButton) {
-            refreshedRemoveButton.classList.remove('success', 'warning');
-            refreshedRemoveButton.disabled = true; // Keep disabled until track is clicked
+            refreshedRemoveButton.classList.remove('warning');
+            refreshedRemoveButton.classList.remove('success');
             refreshedRemoveButton.innerHTML = '<span class="button-icon">-</span> Remove Application';
-          }
-          
-          if (refreshedTrackButton) {
-            refreshedTrackButton.disabled = false;
+            
+            // Update button state
+            const currentUrl = window.location.href;
+            const lastTrackedJob = stats.appliedJobs.find(job => job.lastTracked === true);
+            refreshedRemoveButton.disabled = !(lastTrackedJob && lastTrackedJob.url === currentUrl);
           }
         }, 2000);
         
       } catch (error) {
         console.error("Error removing application:", error);
         
-        // Null check before using removeButton
         if (removeButton && document.body.contains(removeButton)) {
           removeButton.classList.remove('loading');
           removeButton.classList.add('error');
           
           setTimeout(() => {
-            // Get fresh references in case DOM has changed
             const refreshedRemoveButton = document.getElementById('remove-job');
-            const refreshedTrackButton = document.getElementById('track-job');
-            
             if (refreshedRemoveButton) {
               refreshedRemoveButton.classList.remove('error');
-              refreshedRemoveButton.disabled = !isCurrentUrlTracked;
+              refreshedRemoveButton.disabled = false;
               refreshedRemoveButton.innerHTML = '<span class="button-icon">-</span> Remove Application';
-            }
-            
-            if (refreshedTrackButton) {
-              // Enable track button
-              refreshedTrackButton.disabled = isCurrentUrlTracked;
             }
           }, 2000);
         }
       }
     });
-
-    // Add click listener to stats area for manual sync
-    document.querySelector('.job-streak-stats').addEventListener('click', async () => {
-      // Visual feedback that sync is happening
-      const statsElement = document.querySelector('.job-streak-stats');
-      statsElement.classList.add('syncing');
-      
-      // Try to pull from Firestore
-      console.log('Manual sync triggered - pulling from Firestore');
-      const syncSuccess = await pullFromFirestore();
-      
-      // Visual feedback of sync result
-      if (syncSuccess) {
-        statsElement.classList.remove('syncing');
-        statsElement.classList.add('sync-success');
-        setTimeout(() => {
-          statsElement.classList.remove('sync-success');
-        }, 1500);
-      } else {
-        statsElement.classList.remove('syncing');
-        statsElement.classList.add('sync-error');
-        setTimeout(() => {
-          statsElement.classList.remove('sync-error');
-        }, 1500);
-      }
-      
-      // Refresh UI to show updated data
-      await refreshUI(true);
-    });
+    
   } catch (error) {
-    console.error("Error creating job tracking UI:", error);
+    console.error('Error creating UI:', error);
   }
 };
-
-// Function to refresh the UI without recreating it
-const refreshUI = async (skipSync = true) => {
-  try {
-    // Check if UI exists, if not recreate it
-    const container = document.getElementById('job-streak-container');
-    if (!container) {
-      console.log('UI container not found, recreating');
-      createJobTrackingUI();
-      return;
-    }
-
-    // Get latest stats
-    let stats = await getUserStats();
-    if (!stats) {
-      console.log('No stats found, recreating UI');
-      createJobTrackingUI();
-      return;
-    }
-    
-    // Ensure stats has appliedJobs
-    if (!stats.appliedJobs) {
-      stats.appliedJobs = [];
-    }
-    
-    // Update counter displays
-    const todayCountElement = document.querySelector('.stat-box:first-child .stat-count');
-    const streakCountElement = document.querySelector('.stat-box:nth-child(2) .stat-count');
-    
-    if (todayCountElement) {
-      todayCountElement.textContent = stats.todayCount || 0;
-    }
-    
-    if (streakCountElement) {
-      streakCountElement.textContent = stats.streak || 0;
-    }
-    
-    // Reset button states based on current URL
-    const currentUrl = window.location.href;
-    const lastTrackedJob = Array.isArray(stats.appliedJobs) 
-      ? stats.appliedJobs.find(job => job && job.lastTracked === true) 
-      : null;
-    const isCurrentUrlTracked = lastTrackedJob && lastTrackedJob.url === currentUrl;
-    
-    const trackButton = document.getElementById('track-job');
-    const removeButton = document.getElementById('remove-job');
-    
-    if (!trackButton || !removeButton) {
-      console.log('Buttons not found, recreating UI');
-      createJobTrackingUI();
-      return;
-    }
-    
-    // Reset button states and appearances
-    trackButton.disabled = isCurrentUrlTracked;
-    trackButton.classList.remove('loading', 'success', 'error', 'warning');
-    trackButton.innerHTML = '<span class="button-icon">+</span> Track Application';
-    
-    removeButton.disabled = !isCurrentUrlTracked;
-    removeButton.classList.remove('loading', 'success', 'error', 'warning');
-    removeButton.innerHTML = '<span class="button-icon">-</span> Remove Application';
-    
-    // Only sync with Firestore if explicitly requested
-    if (!skipSync) {
-      // Pull latest data from Firestore
-      await pullFromFirestore();
-    }
-  } catch (error) {
-    console.error('Error refreshing UI:', error);
-    // If there's an error, try recreating the UI from scratch
-    createJobTrackingUI();
-  }
-};
-
-// Function to pull data from Firestore without pushing
-const pullFromFirestore = async () => {
-  try {
-    const userData = await new Promise(resolve => {
-      chrome.storage.local.get(['user'], (result) => {
-        resolve(result);
-      });
-    });
-    
-    if (!userData.user) {
-      console.log('No user found, skipping Firestore pull');
-      return false;
-    }
-    
-    // Send message to get data from Firestore
-    const response = await chrome.runtime.sendMessage({ 
-      action: 'getStats', 
-      userId: userData.user.uid 
-    });
-    
-    return response && response.success;
-  } catch (error) {
-    console.error('Error pulling from Firestore:', error);
-    return false;
-  }
-};
-
-// Set up periodic UI refresh every 500 milliseconds (half a second)
-setInterval(() => {
-  // Just refresh UI without syncing to Firestore
-  refreshUI(true).catch(error => {
-    console.error('Error in periodic UI refresh:', error);
-  });
-}, 500);
-
-// Create and inject UI when page loads
-window.addEventListener('load', createJobTrackingUI);
-
-// Listen for messages from background script
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'refreshStats') {
-    // Refresh UI with latest data AND pull from Firestore
-    refreshUI(false).catch(error => {
-      console.error('Error refreshing UI:', error);
-    });
-    sendResponse({ status: 'success' });
-  }
-  
-  if (request.action === 'userLoggedOut') {
-    console.log('User logged out, removing UI');
-    // Remove the tracking UI when user logs out
-    const container = document.getElementById('job-streak-container');
-    if (container) {
-      container.remove();
-    }
-    sendResponse({ status: 'success' });
-  }
-  
-  return true; // Keep message channel open for async response
-});
-
-// Add event listener for URL changes in single-page apps
-let lastUrl = window.location.href;
-new MutationObserver(() => {
-  const currentUrl = window.location.href;
-  if (currentUrl !== lastUrl) {
-    lastUrl = currentUrl;
-    // URL changed, refresh the UI without pushing to Firestore
-    refreshUI(true).catch(error => {
-      console.error('Error refreshing UI after URL change:', error);
-    });
-  }
-}).observe(document, { subtree: true, childList: true });
 
 // Function to sync with Firestore via background script
 const syncWithFirestore = async () => {
-  console.log('Sending syncStats message to background script');
   try {
     // Make sure we have user and stats data before attempting to sync
     const userData = await new Promise(resolve => {
@@ -623,13 +403,12 @@ const syncWithFirestore = async () => {
       });
     });
     
-    // If no user or stats, don't sync
     if (!userData.user || !userData.stats) {
       console.log('No user or stats found, skipping sync');
       return false;
     }
     
-    // Make sure stats has userId for verification
+    // Ensure stats has userId for verification
     if (!userData.stats.userId) {
       userData.stats.userId = userData.user.uid;
       await new Promise(resolve => {
@@ -639,23 +418,14 @@ const syncWithFirestore = async () => {
     
     // Send sync message to background script
     const response = await chrome.runtime.sendMessage({ action: 'syncStats' });
-    console.log('Sync response:', response);
-    if (response && response.status === 'success') {
-      console.log('Sync successful');
-      return true;
-    } else {
-      console.error('Sync failed:', response ? response.message : 'Unknown error');
-      return false;
-    }
+    return response && response.status === 'success';
   } catch (error) {
     console.error('Error sending sync message:', error);
+    
     // Try again in case the background script was inactive
     try {
-      console.log('Retrying sync after error...');
-      // Wait a moment for the service worker to wake up
       await new Promise(resolve => setTimeout(resolve, 500));
       const retryResponse = await chrome.runtime.sendMessage({ action: 'syncStats' });
-      console.log('Retry sync response:', retryResponse);
       return retryResponse && retryResponse.status === 'success';
     } catch (retryError) {
       console.error('Retry sync also failed:', retryError);
@@ -663,3 +433,74 @@ const syncWithFirestore = async () => {
     }
   }
 };
+
+// Function to update button states based on current URL
+const updateButtonStates = async () => {
+  try {
+    const currentUrl = window.location.href;
+    const userData = await new Promise(resolve => {
+      chrome.storage.local.get(['stats'], (result) => {
+        resolve(result);
+      });
+    });
+    
+    if (!userData.stats || !Array.isArray(userData.stats.appliedJobs)) {
+      console.log('No valid stats found for button state update');
+      return;
+    }
+    
+    const stats = userData.stats;
+    const lastTrackedJob = stats.appliedJobs.find(job => job && job.lastTracked === true);
+    const isCurrentUrlTracked = lastTrackedJob && lastTrackedJob.url === currentUrl;
+    
+    // Get button elements
+    const trackButton = document.getElementById('track-job');
+    const removeButton = document.getElementById('remove-job');
+    
+    if (trackButton && removeButton) {
+      // Update button states
+      trackButton.disabled = isCurrentUrlTracked;
+      removeButton.disabled = !isCurrentUrlTracked;
+      
+      // Reset button text if needed
+      trackButton.innerHTML = '<span class="button-icon">+</span> Track Application';
+      removeButton.innerHTML = '<span class="button-icon">-</span> Remove Application';
+      
+      // Remove any status classes
+      trackButton.classList.remove('loading', 'success', 'warning', 'error');
+      removeButton.classList.remove('loading', 'success', 'warning', 'error');
+    }
+  } catch (error) {
+    console.error('Error updating button states:', error);
+  }
+};
+
+// Initial UI creation
+createJobTrackingUI();
+
+// Listen for messages from background or popup
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.action === 'refreshStats') {
+    console.log('Received refreshStats message, updating UI');
+    // Fully recreate the UI for major changes
+    createJobTrackingUI();
+  } else if (message.action === 'updateButtonStates') {
+    console.log('Received updateButtonStates message');
+    // Just update button states for minor changes
+    updateButtonStates();
+  } else if (message.action === 'statsUpdated') {
+    console.log('Received statsUpdated message, updating button states');
+    // Update button states when stats are updated in popup
+    updateButtonStates();
+  }
+});
+
+// Add a mutation observer to detect URL changes in SPA sites
+let lastUrl = location.href;
+new MutationObserver(() => {
+  const url = location.href;
+  if (url !== lastUrl) {
+    lastUrl = url;
+    createJobTrackingUI();
+  }
+}).observe(document, { subtree: true, childList: true });
