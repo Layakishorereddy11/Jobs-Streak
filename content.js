@@ -393,6 +393,74 @@ const createJobTrackingUI = async () => {
   }
 };
 
+// Function to create and inject resume/cover letter buttons
+const createResumeCoverletterButtons = () => {
+  // Create the container for the buttons
+  const buttonContainer = document.createElement('div');
+  buttonContainer.id = 'resume-coverletter-buttons';
+  buttonContainer.style.position = 'fixed';
+  buttonContainer.style.top = '10px';
+  buttonContainer.style.right = '10px';
+  buttonContainer.style.zIndex = '1000';
+
+  // Create the 'Generate Resume' button
+  const generateResumeButton = document.createElement('button');
+  generateResumeButton.id = 'generate-resume';
+  generateResumeButton.textContent = 'Generate Resume';
+  generateResumeButton.style.margin = '5px';
+
+  // Create the 'Generate Cover Letter' button
+  const generateCoverLetterButton = document.createElement('button');
+  generateCoverLetterButton.id = 'generate-coverletter';
+  generateCoverLetterButton.textContent = 'Generate Cover Letter';
+  generateCoverLetterButton.style.margin = '5px';
+
+  // Add event listener to capture selected text
+  document.addEventListener('keydown', (event) => {
+    if (event.ctrlKey && event.key === 'c') {
+      const selectedText = window.getSelection().toString();
+      if (selectedText.trim() !== '') {
+        localStorage.setItem('jobDescription', selectedText);
+      }
+    }
+  });
+
+  // Add event listener for 'Generate Resume' button
+  generateResumeButton.addEventListener('click', () => {
+    const jobDescription = localStorage.getItem('jobDescription');
+    if (jobDescription) {
+      chrome.runtime.sendMessage({
+        action: 'generateDocument',
+        jobDescription: jobDescription,
+        documentType: 'resume'
+      });
+    } else {
+      alert('Please select the job description text first and then press Ctrl+C.');
+    }
+  });
+
+  // Add event listener for 'Generate Cover Letter' button
+  generateCoverLetterButton.addEventListener('click', () => {
+    const jobDescription = localStorage.getItem('jobDescription');
+    if (jobDescription) {
+      chrome.runtime.sendMessage({
+        action: 'generateDocument',
+        jobDescription: jobDescription,
+        documentType: 'coverletter'
+      });
+    } else {
+      alert('Please select the job description text first and then press Ctrl+C.');
+    }
+  });
+
+  // Append the buttons to the container
+  buttonContainer.appendChild(generateResumeButton);
+  buttonContainer.appendChild(generateCoverLetterButton);
+
+  // Append the container to the document body
+  document.body.appendChild(buttonContainer);
+};
+
 // Function to sync with Firestore via background script
 const syncWithFirestore = async () => {
   try {
@@ -477,6 +545,9 @@ const updateButtonStates = async () => {
 
 // Initial UI creation
 createJobTrackingUI();
+
+// Create resume/cover letter buttons
+createResumeCoverletterButtons();
 
 // Listen for messages from background or popup
 chrome.runtime.onMessage.addListener((message) => {

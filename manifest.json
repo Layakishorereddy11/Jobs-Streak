@@ -8,12 +8,17 @@
     "storage",
     "identity",
     "activeTab",
-    "alarms"
+    "alarms",
+    "scripting",
+    "http://localhost/*", 
+    "https://*/*"
   ],
   "host_permissions": [
     "<all_urls>",
     "https://*.googleapis.com/*",
-    "https://*.firebaseapp.com/*"
+    "https://*.firebaseapp.com/*",
+    "http://localhost/*",
+    "https://*/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' https://*.firebaseapp.com https://*.firebase.googleapis.com https://*.google.com https://*.googleapis.com https://www.gstatic.com"
