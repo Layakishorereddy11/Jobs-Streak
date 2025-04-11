@@ -1,5 +1,5 @@
 // Make sure the alarms permission is in the manifest.json file:
-// "permissions": ["tabs", "storage", "identity", "activeTab", "alarms"]
+// "permissions": ["tabs", "storage", "identity", "activeTab", "alarms","downloads"]
 
 importScripts('firebase-config.js');
 // Import Firebase SDK (only the necessary modules)
@@ -40,10 +40,9 @@ function initializeFirebaseIfNeeded() {
 
 // Example function to set API keys from environment or file
 function setup_api_keys(keys_file=null) {
-    """Set up API keys from environment variables or a keys file"""
     importScripts('download-libs.js')
-    let os;
-    if (typeof require !== 'undefined') {
+    let os
+    if (typeof require !== 'undefined'){
       os = require('os');
     }
 
@@ -271,6 +270,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   setup_api_keys('keys.json')
   // Sync user stats with Firestore
   if (request.action === 'syncStats') {
+    chrome.storage.local.get(['user', 'stats'], (result) => {
+      if (result.user && result.stats) {
+        if (initializeFirebaseIfNeeded()) {
+          syncWithFirestore(result.user.uid, result.stats);
+          sendResponse({ status: 'success' });
+        } else {
+          sendResponse({ status: 'error', message: 'Failed to initialize Firebase' });
+        }
+      } else {
+        sendResponse({ status: 'error', message: 'Missing user or stats' });
+      }
+    });
+    return true;
+  }
+  
+    // Handle the new generateDocument action
+  if (request.action === 'generateDocument') {
+      const { jobDescription, documentType } = request;
+
         // Function to call Gemini API
     const call_gemini_api = async (prompt) => {
       try {
@@ -301,49 +319,33 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return "Error: Could not get response from Gemini";
         }
     };
-    chrome.storage.local.get(['user', 'stats'], (result) => {
-      if (result.user && result.stats) {
-        if (initializeFirebaseIfNeeded()) {
-          syncWithFirestore(result.user.uid, result.stats);
-          sendResponse({ status: 'success' });
-        } else {
-          sendResponse({ status: 'error', message: 'Failed to initialize Firebase' });
+    
+        if (!jobDescription || !documentType) {
+            sendResponse({ status: 'error', error: 'Missing job description or document type.' });
+            return;
         }
-      } else {
-        sendResponse({ status: 'error', message: 'Missing user or stats' });
-      }
-    });
-    return true;
-  }
-  
-    // Handle the new generateDocument action
-  if (request.action === 'generateDocument') {
-      const { jobDescription, documentType } = request;
-
-      if (!jobDescription || !documentType) {
-          sendResponse({ status: 'error', error: 'Missing jobDescription or documentType' });
-          return true;
-      }
-
-      // Determine the appropriate prompt based on the document type
-      let prompt = "";
-      if (documentType === 'resume') {
-          prompt = `Generate a professional resume for a job applicant based on the following job description:\n\n${jobDescription}\n\nThe resume should be well-structured, highlight relevant skills and experiences, and be tailored to this job description.`;
-      } else if (documentType === 'coverletter') {
-          prompt = `Generate a compelling cover letter for a job applicant based on the following job description:\n\n${jobDescription}\n\nThe cover letter should express strong interest in the position, highlight relevant skills and experiences, and be tailored to this job description.`;
-      } else {
-          sendResponse({ status: 'error', error: 'Invalid document type' });
-          return true;
-      }
-
-      // Call Gemini API
-      call_gemini_api(prompt)
+    
+        const prompt = `Generate a ${documentType} for the following job description: ${jobDescription}`;
+    
+        call_gemini_api(prompt)
           .then(document => {
-              if (document.startsWith("Error:")) {
-                  sendResponse({ status: 'error', error: document });
+            //  <CODE_BLOCK>  New download logic here
+            const filename = documentType === 'resume' ? 'resume.txt' : 'cover_letter.txt';
+            const fileContent = document; // Assuming 'document' is the text content
+    
+            chrome.downloads.download({
+              url: 'data:text/plain;charset=utf-8,' + encodeURIComponent(fileContent),
+              filename: filename,
+              saveAs: false  // Set to true if you want to show the "save as" dialog
+            }, (downloadItemId) => {
+              if (downloadItemId) {
+                console.log(`Download started with ID: ${downloadItemId}`);
+                sendResponse({ status: 'success' }); // Respond immediately
               } else {
-                  sendResponse({ status: 'success', document: document });
+                console.error('Download failed:', chrome.runtime.lastError);
+                sendResponse({ status: 'error', error: 'Download failed.' });
               }
+            });
           })
           .catch(error => {
               console.error('Error generating document:', error);
@@ -351,7 +353,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           });
 
       return true; // Indicates that the response will be sent asynchronously
-  }
     
 
     // User logged in - update all tabs

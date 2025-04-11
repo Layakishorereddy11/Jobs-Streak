@@ -416,7 +416,6 @@ const createResumeCoverletterButtons = () => {
   generateCoverLetterButton.style.margin = '5px';
 
   // Add event listener to capture selected text
-  document.addEventListener('keydown', (event) => {
     if (event.ctrlKey && event.key === 'c') {
       const selectedText = window.getSelection().toString();
       if (selectedText.trim() !== '') {
@@ -427,13 +426,28 @@ const createResumeCoverletterButtons = () => {
 
   // Add event listener for 'Generate Resume' button
   generateResumeButton.addEventListener('click', () => {
+    
     const jobDescription = localStorage.getItem('jobDescription');
     if (jobDescription) {
       chrome.runtime.sendMessage({
         action: 'generateDocument',
         jobDescription: jobDescription,
         documentType: 'resume'
-      });
+      }, (response) => {
+          if (response && response.status === 'success') {
+              // Create a temporary link to trigger download
+              const link = document.createElement('a');
+              link.href = `data:text/plain;charset=utf-8,${encodeURIComponent(response.document)}`;
+              link.download = 'resume.txt';
+              link.style.display = 'none'; // Hide the link
+              document.body.appendChild(link);
+              link.click(); // Trigger download
+              document.body.removeChild(link); // Remove link after download
+          } else if (response) {
+              console.error('Error generating resume:', response.error);
+              alert('Error generating resume: ' + response.error);
+          }
+      });;
     } else {
       alert('Please select the job description text first and then press Ctrl+C.');
     }
@@ -447,7 +461,22 @@ const createResumeCoverletterButtons = () => {
         action: 'generateDocument',
         jobDescription: jobDescription,
         documentType: 'coverletter'
-      });
+      }, (response) => {
+        if (response && response.status === 'success') {
+            // Create a temporary link to trigger download
+            const link = document.createElement('a');
+            link.href = `data:text/plain;charset=utf-8,${encodeURIComponent(response.document)}`;
+            link.download = 'cover_letter.txt';
+            link.style.display = 'none'; // Hide the link
+            document.body.appendChild(link);
+            link.click(); // Trigger download
+            document.body.removeChild(link); // Remove link after download
+        } else if (response) {
+            console.error('Error generating cover letter:', response.error);
+            alert('Error generating cover letter: ' + response.error);
+        }
+      });;
+
     } else {
       alert('Please select the job description text first and then press Ctrl+C.');
     }
