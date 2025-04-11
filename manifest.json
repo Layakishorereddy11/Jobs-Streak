@@ -9,9 +9,7 @@
     "identity",
     "activeTab",
     "alarms",
-    "scripting",
-    "http://localhost/*", 
-    "https://*/*"
+    "scripting"
   ],
   "host_permissions": [
     "<all_urls>",
