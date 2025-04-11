@@ -55,8 +55,7 @@ MIT
 
 ## Author
 
-[Your Name]
-
+Layakishore Reddy 
 ---
 
 Made with ❤️ for job seekers
